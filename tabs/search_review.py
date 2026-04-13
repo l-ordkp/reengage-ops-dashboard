@@ -131,8 +131,19 @@ def render(df_all):
             st.markdown(f"- **Brand ID:** `{r.get('b_name_id') or '—'}`")
             st.markdown(f"- **Date:** {r['review_date']} · **Days left:** {r['days_left']}")
             st.markdown(f"- **Status:** {r['status']} · **Priority:** {r['priority']}")
-            if r.get("portal_link"):
-                st.link_button("Open portal", r["portal_link"])
+            portal_user = r.get("portal_username") or ""
+            portal_pass = r.get("portal_password") or ""
+            if portal_user and portal_pass:
+                from urllib.parse import urlencode
+                platform_key = "UBEREATS" if r["platform"] == "UberEats" else "DOORDASH"
+                login_params = urlencode({
+                    "platform": platform_key,
+                    "username": portal_user,
+                    "password": portal_pass,
+                    "store_id": r.get("store_id") or "",
+                })
+                login_url = f"http://debug.loopapplication.xyz/?{login_params}"
+                st.link_button("Login to Portal", login_url)
 
         with col2:
             st.markdown("**Customer**")
