@@ -31,6 +31,8 @@ def load_reviews() -> pd.DataFrame:
             ar.platform,
             ar.slug,
             ar.store_id,
+            sm.username AS portal_username,
+            sm.password AS portal_password,
             ar.customer_name,
             ar.user_id AS customer_id,
             SAFE_CAST(ar.orders_count AS INT64) AS orders_count,
@@ -150,7 +152,8 @@ def load_reviews() -> pd.DataFrame:
         rating_numeric, rating_display, review_text, items, order_value,
         review_date, days_left,
         portal_link, response_text, rr_response_type AS response_type, coupon_value,
-        CAST(config_id AS STRING) AS config_id, status, priority, is_replied
+        CAST(config_id AS STRING) AS config_id, status, priority, is_replied,
+        portal_username, portal_password
     FROM with_status
     ORDER BY
         CASE priority WHEN 'CRITICAL' THEN 1 WHEN 'URGENT' THEN 2 ELSE 3 END,

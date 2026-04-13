@@ -142,8 +142,21 @@ def render(df_all, user_email):
             st.code(f"📋 Copy", language=None)
         with b2:
             st.code(resp, language=None)
-    if r.get("portal_link"):
-        st.link_button("📋 Open portal", r["portal_link"])
+
+    # Login to Portal button (uses debug URL → extension auto-logs in)
+    portal_user = r.get("portal_username") or ""
+    portal_pass = r.get("portal_password") or ""
+    if portal_user and portal_pass:
+        platform_key = "UBEREATS" if r["platform"] == "UberEats" else "DOORDASH"
+        from urllib.parse import urlencode
+        login_params = urlencode({
+            "platform": platform_key,
+            "username": portal_user,
+            "password": portal_pass,
+            "store_id": r.get("store_id") or "",
+        })
+        login_url = f"http://debug.loopapplication.xyz/?{login_params}"
+        st.link_button("Login to Portal", login_url, use_container_width=True)
 
     if st.button("✅ Mark responded", key=f"mr_{uid}", use_container_width=True):
         method = "manual_dd" if r["platform"] == "Doordash" else "manual_ue"
