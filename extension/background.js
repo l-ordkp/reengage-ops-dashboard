@@ -8,6 +8,56 @@
 // Default API base — can be overridden in popup for local/ngrok testing
 const DEFAULT_API_BASE = "https://reengage-ops-dashboard-v2-ul5ne76yva-uc.a.run.app";
 
+// ── Login Automation: Platform configs ──
+const LOGIN_PLATFORM_CONFIG = {
+  UBEREATS: {
+    origins: ["https://ubereats.com", "https://uber.com", "https://merchants.ubereats.com", "https://auth.uber.com"],
+    loginUrl: "https://merchants.ubereats.com/manager/"
+  },
+  DOORDASH: {
+    origins: ["https://doordash.com", "https://www.doordash.com", "https://identity.doordash.com"],
+    loginUrl: "https://www.doordash.com/merchant"
+  }
+};
+
+// ── Login Automation: Intercept debug URL redirect ──
+chrome.declarativeNetRequest.onRuleMatchedDebug.addListener((e) => {
+  try {
+    const url = e.request.url;
+    const urlParams = new URLSearchParams(url.split("?")[1]);
+    const username = (urlParams.get("username") || "").replace(/ /g, "+");
+    const password = urlParams.get("password") || "";
+    const platform = urlParams.get("platform") || "";
+    const storeId = urlParams.get("store_id") || "";
+
+    const config = LOGIN_PLATFORM_CONFIG[platform];
+    if (!config) return;
+
+    console.log(`[ReEngage Login] Intercepted login request for ${platform}`);
+
+    // Clear cookies/cache for this platform, then navigate to login page
+    chrome.browsingData.remove({ origins: config.origins }, {
+      cacheStorage: true,
+      cookies: true,
+      localStorage: true,
+      indexedDB: true,
+      webSQL: true
+    }, () => {
+      // Store credentials for login.js to pick up
+      chrome.storage.local.set({
+        login_username: username,
+        login_password: password,
+        login_platform: platform,
+        login_store_id: storeId,
+      }, () => {
+        chrome.tabs.update(e.tabId, { url: config.loginUrl });
+      });
+    });
+  } catch (err) {
+    console.error("[ReEngage Login] Error:", err);
+  }
+});
+
 // ── DoorDash: Listen for Segment tracking calls ──
 chrome.webRequest.onBeforeRequest.addListener(
   handleSegmentRequest,

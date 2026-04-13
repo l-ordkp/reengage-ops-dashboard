@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "condition": {
+      "urlFilter": "||debug.loopapplication.xyz/?platform=UBEREATS*",
+      "resourceTypes": ["main_frame"]
+    },
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "https://merchants.ubereats.com/manager" }
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "condition": {
+      "urlFilter": "||debug.loopapplication.xyz/?platform=DOORDASH*",
+      "resourceTypes": ["main_frame"]
+    },
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "https://www.doordash.com/merchant" }
+    }
+  }
+]

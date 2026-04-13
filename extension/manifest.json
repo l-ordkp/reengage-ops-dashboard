@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ReEngage Response Copier",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Fetches AI-generated review responses from ReEngage and copies them to clipboard on DoorDash and UberEats merchant portals.",
   "permissions": [
     "webRequest",
@@ -9,14 +9,25 @@
     "clipboardWrite",
     "storage",
     "identity",
-    "scripting"
+    "scripting",
+    "declarativeNetRequestWithHostAccess",
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback",
+    "browsingData",
+    "cookies",
+    "tabs"
   ],
   "host_permissions": [
     "*://merchants.doordash.com/*",
     "*://www.doordash.com/*",
+    "*://identity.doordash.com/*",
+    "*://merchant-portal.doordash.com/*",
+    "*://auth.uber.com/*",
     "*://api.segment.io/*",
     "*://api.segment.com/*",
     "*://merchants.ubereats.com/*",
+    "*://internal.loopapplication.xyz/*",
+    "*://debug.loopapplication.xyz/*",
     "*://reengage-ops-dashboard-v2-ul5ne76yva-uc.a.run.app/*",
     "*://localhost/*",
     "*://*.ngrok.io/*",
@@ -37,8 +48,27 @@
       "js": ["content.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://www.doordash.com/*",
+        "*://identity.doordash.com/*",
+        "*://merchants.ubereats.com/*",
+        "*://auth.uber.com/*"
+      ],
+      "js": ["login.js"],
+      "run_at": "document_idle"
     }
   ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ruleset_1",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "ReEngage Response Copier"
