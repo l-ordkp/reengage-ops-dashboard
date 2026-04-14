@@ -200,9 +200,11 @@ def _generate_responses(no_response_df, user_email):
                 success += 1
             else:
                 failed += 1
+                err_msg = result.get("errors") or "saved=False (no response_id)"
+                st.caption(f"Failed {review_dict.get('order_id', '?')}: {err_msg}")
         except Exception as e:
             failed += 1
-            st.caption(f"Error for {review_dict.get('order_id', '?')}: {e}")
+            st.caption(f"Error for {review_dict.get('order_id', '?')}: {type(e).__name__}: {e}")
 
         progress.progress((i + 1) / total, text=f"Generating... {i+1}/{total}")
 

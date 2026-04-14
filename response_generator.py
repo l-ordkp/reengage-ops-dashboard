@@ -329,7 +329,9 @@ def save_response_to_db(review: dict, response_text: str, errors: str | None,
 
     except Exception as e:
         session.rollback()
-        logger.error(f"Failed to save response for order {review.get('order_id')}: {e}")
+        logger.error(f"Failed to save response for order {review.get('order_id')}: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return None
     finally:
         session.close()
@@ -371,8 +373,17 @@ def generate_and_save(review: dict, config: dict) -> dict:
 
     response_type = config.get("response_type", "AI")
 
+    logger.info(f"Generating response for order {review.get('order_id')} (config: {config.get('config_name')})")
     response_text, errors = generate_ai_response(review, config, coupon_value)
 
+    if errors:
+        logger.warning(f"Generation errors for {review.get('order_id')}: {errors}")
+
+    if not response_text:
+        logger.error(f"No response text generated for {review.get('order_id')}")
+        return {"response_text": None, "errors": errors or "No response generated", "coupon_value": coupon_value, "saved": False}
+
+    logger.info(f"Saving response for order {review.get('order_id')} ({len(response_text)} chars)")
     saved = save_response_to_db(
         review=review,
         response_text=response_text,
@@ -382,6 +393,9 @@ def generate_and_save(review: dict, config: dict) -> dict:
         min_order_value=min_order_value,
         response_type=response_type,
     )
+
+    if not saved:
+        logger.error(f"Failed to save response for {review.get('order_id')} to DB")
 
     return {
         "response_text": response_text,
