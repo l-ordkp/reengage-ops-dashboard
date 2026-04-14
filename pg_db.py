@@ -30,7 +30,14 @@ def get_pg_engine():
     global _engine
     if _engine is None:
         cfg = _get_pg_config()
-        url = f"postgresql+psycopg2://{cfg['user']}:{cfg['password']}@{cfg['host']}:{cfg['port']}/{cfg['database']}"
+        host = cfg["host"]
+        # Cloud SQL Unix socket (starts with /cloudsql/)
+        if host.startswith("/"):
+            url = (f"postgresql+psycopg2://{cfg['user']}:{cfg['password']}"
+                   f"@/{cfg['database']}?host={host}")
+        else:
+            url = (f"postgresql+psycopg2://{cfg['user']}:{cfg['password']}"
+                   f"@{host}:{cfg['port']}/{cfg['database']}")
         _engine = create_engine(url, pool_size=3, max_overflow=5, pool_pre_ping=True)
     return _engine
 
