@@ -36,3 +36,5 @@ class ReviewResponse(Base):
     min_order_value = Column(Float)
     response_sent = Column(DateTime)
     errors = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
