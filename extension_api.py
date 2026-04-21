@@ -218,4 +218,11 @@ def mark_responded(
                  TIMESTAMP('{now}'), TIMESTAMP('{now}'))
         """)
 
+    # Mark as Loop-replied in automation_reviews
+    bq_exec(f"""
+        UPDATE `{PROJECT}.{TABLE_AUTOMATION_REVIEWS}`
+        SET is_loop_replied = TRUE
+        WHERE order_id = '{safe_order_id}'
+    """)
+
     return {"success": True, "operator_email": operator_email, "review_uid": review_uid}

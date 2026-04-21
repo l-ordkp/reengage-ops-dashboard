@@ -37,10 +37,20 @@ def log_action(review_uid, platform, chain_name, action, operator_email, perform
 
 def mark_assignment_completed(assignment_id: str, performed_by: str):
     now = _now()
+    sa = _safe(assignment_id)
     bq_exec(f"""
     UPDATE `{TABLE_ASSIGNMENTS}`
     SET status = 'completed', completed_at = TIMESTAMP('{now}')
-    WHERE assignment_id = '{_safe(assignment_id)}'
+    WHERE assignment_id = '{sa}'
+    """)
+    # Also mark is_loop_replied in automation_reviews
+    from config import TABLE_AUTOMATION_REVIEWS
+    bq_exec(f"""
+    UPDATE `{TABLE_AUTOMATION_REVIEWS}`
+    SET is_loop_replied = TRUE
+    WHERE order_id IN (
+        SELECT order_id FROM `{TABLE_ASSIGNMENTS}` WHERE assignment_id = '{sa}'
+    )
     """)
 
 
