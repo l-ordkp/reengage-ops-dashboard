@@ -79,10 +79,10 @@ def validate_operator(email: str) -> str:
     if not email or "@" not in email:
         raise HTTPException(status_code=401, detail="Missing operator email")
 
-    safe = email.replace("'", "''")
+    safe = email.lower().replace("'", "''")
     rows = bq_read(f"""
         SELECT email FROM `{PROJECT}.{TABLE_USERS}`
-        WHERE email = '{safe}' AND approved = TRUE
+        WHERE LOWER(email) = '{safe}' AND approved = TRUE
         LIMIT 1
     """)
 

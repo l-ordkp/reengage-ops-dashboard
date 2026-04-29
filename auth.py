@@ -121,12 +121,12 @@ def login_page():
             # Backfill name in BQ if it was manually added without one
             if not user.get("name"):
                 sn = _safe(name)
-                se = _safe(email)
+                se = _safe(email.lower())
                 now = _now()
                 bq_exec(f"""
                     UPDATE `{TABLE_USERS}`
                     SET name = '{sn}', updated_at = TIMESTAMP('{now}')
-                    WHERE email = '{se}'
+                    WHERE LOWER(email) = '{se}'
                 """)
 
             st.session_state["auth_email"] = email
@@ -192,10 +192,10 @@ def _user_count() -> int:
 
 
 def get_user(email: str) -> dict | None:
-    se = _safe(email)
+    se = _safe(email.lower())
     df = bq_read(f"""
         SELECT email, name, role, approved, reduction_pct
-        FROM `{TABLE_USERS}` WHERE email = '{se}' LIMIT 1
+        FROM `{TABLE_USERS}` WHERE LOWER(email) = '{se}' LIMIT 1
     """)
     if df.empty:
         return None
@@ -216,9 +216,9 @@ def load_all_users() -> pd.DataFrame:
 
 def add_user(email: str, name: str, role: str, reduction_pct: float, added_by: str):
     now = _now()
-    se, sn, sa = _safe(email), _safe(name), _safe(added_by)
+    se, sn, sa = _safe(email.lower()), _safe(name), _safe(added_by)
     bq_exec(f"""
-    MERGE `{TABLE_USERS}` T USING (SELECT '{se}' AS email) S ON T.email = S.email
+    MERGE `{TABLE_USERS}` T USING (SELECT '{se}' AS email) S ON LOWER(T.email) = S.email
     WHEN MATCHED THEN UPDATE SET
         name = '{sn}', role = '{role}', approved = TRUE,
         reduction_pct = {reduction_pct}, updated_at = TIMESTAMP('{now}')
@@ -231,30 +231,30 @@ def add_user(email: str, name: str, role: str, reduction_pct: float, added_by: s
 
 def update_user_role(email: str, new_role: str, reduction_pct: float):
     now = _now()
-    se = _safe(email)
+    se = _safe(email.lower())
     bq_exec(f"""
     UPDATE `{TABLE_USERS}`
     SET role = '{new_role}', reduction_pct = {reduction_pct},
         updated_at = TIMESTAMP('{now}')
-    WHERE email = '{se}'
+    WHERE LOWER(email) = '{se}'
     """)
 
 
 def update_user_approval(email: str, approved: bool):
     now = _now()
-    se = _safe(email)
+    se = _safe(email.lower())
     bq_exec(f"""
     UPDATE `{TABLE_USERS}`
     SET approved = {approved}, updated_at = TIMESTAMP('{now}')
-    WHERE email = '{se}'
+    WHERE LOWER(email) = '{se}'
     """)
 
 
 def remove_user(email: str):
     from write_helpers import redistribute_assignments
     redistribute_assignments(email)
-    se = _safe(email)
-    bq_exec(f"DELETE FROM `{TABLE_USERS}` WHERE email = '{se}'")
+    se = _safe(email.lower())
+    bq_exec(f"DELETE FROM `{TABLE_USERS}` WHERE LOWER(email) = '{se}'")
 
 
 def is_lead(role: str) -> bool:
