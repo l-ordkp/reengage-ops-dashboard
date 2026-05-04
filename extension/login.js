@@ -19,6 +19,8 @@ const LOGIN_SELECTORS = {
   DOORDASH_OTP: "input[type='number']",
 };
 
+console.log(`[ReEngage Login] login.js loaded on ${window.location.hostname}${window.location.pathname}`);
+
 chrome.storage.local.get(
   ["login_username", "login_password", "login_platform", "login_store_id"],
   async (data) => {
@@ -27,120 +29,176 @@ chrome.storage.local.get(
     const platform = data.login_platform;
     const storeId = data.login_store_id;
 
-    if (!platform || !username) return;
+    console.log(`[ReEngage Login] Stored creds: platform=${platform || "NONE"}, username=${username ? "***" : "NONE"}, password=${password ? "***" : "NONE"}, storeId=${storeId || "NONE"}`);
 
-    console.log(`[ReEngage Login] Auto-login for ${platform}`);
+    if (!platform || !username) {
+      console.log("[ReEngage Login] No credentials stored — skipping");
+      return;
+    }
 
+    const host = window.location.hostname;
+    console.log(`[ReEngage Login] Auto-login for ${platform} on ${host}`);
+
+    // Only attempt login on the correct login page
+    // UberEats: auth.uber.com (not merchants.ubereats.com which redirects)
+    // DoorDash: identity.doordash.com or www.doordash.com (login page)
+    if (platform === "UBEREATS" && !host.includes("auth.uber.com")) {
+      console.log("[ReEngage Login] Waiting for redirect to auth.uber.com...");
+      return; // Keep credentials, login.js will run again on auth.uber.com
+    }
+
+    let success = false;
     try {
       switch (platform) {
         case "UBEREATS":
-          await loginUberEats(username, password, storeId);
+          console.log("[ReEngage Login] Starting UberEats login flow...");
+          success = await loginUberEats(username, password, storeId);
           break;
         case "DOORDASH":
-          await loginDoorDash(username, password, storeId);
+          console.log("[ReEngage Login] Starting DoorDash login flow...");
+          success = await loginDoorDash(username, password, storeId);
           break;
       }
+      console.log(`[ReEngage Login] Login flow completed. success=${success}`);
     } catch (e) {
-      console.error("[ReEngage Login] Error:", e);
+      console.error("[ReEngage Login] Error during login:", e);
     }
 
-    // Clean up credentials from storage
-    chrome.storage.local.remove([
-      "login_username",
-      "login_password",
-      "login_platform",
-      "login_store_id",
-    ]);
+    if (success) {
+      console.log("[ReEngage Login] Cleaning up stored credentials");
+      chrome.storage.local.remove([
+        "login_username",
+        "login_password",
+        "login_platform",
+        "login_store_id",
+      ]);
+    } else {
+      console.log("[ReEngage Login] Login not successful — keeping credentials for retry");
+    }
   }
 );
 
 // ── DoorDash Login ──
 async function loginDoorDash(username, password, storeId) {
+  console.log("[ReEngage Login] [DD] Waiting for page load...");
   await sleep(4000);
 
   // Step 1: Enter username
   if (document.querySelector(LOGIN_SELECTORS.DOORDASH_USERNAME)) {
+    console.log("[ReEngage Login] [DD] Step 1: Entering username");
     await typeIntoField(LOGIN_SELECTORS.DOORDASH_USERNAME, username);
     simulateClick(document.querySelector(LOGIN_SELECTORS.DOORDASH_MERCHANT_LOGIN_BUTTON));
   } else {
+    console.log("[ReEngage Login] [DD] Username field not found — redirecting");
     redirectIfNeeded(getDoorDashUrl(storeId), "https://www.doordash.com/merchant");
-    return;
+    return false;
   }
 
   await sleep(4000);
 
   // Step 2: Click "Use password" if shown
   if (document.querySelector(LOGIN_SELECTORS.DOORDASH_USE_PASSWORD_BUTTON)) {
+    console.log("[ReEngage Login] [DD] Step 2: Clicking 'Use password'");
     simulateClick(document.querySelector(LOGIN_SELECTORS.DOORDASH_USE_PASSWORD_BUTTON));
     await sleep(4000);
   }
 
   // Step 3: Enter password
   if (document.querySelector(LOGIN_SELECTORS.DOORDASH_PASSWORD)) {
+    console.log("[ReEngage Login] [DD] Step 3: Entering password");
     await typeIntoField(LOGIN_SELECTORS.DOORDASH_PASSWORD, password);
     simulateClick(document.querySelector(LOGIN_SELECTORS.DOORDASH_LOGIN_BUTTON));
+  } else {
+    console.log("[ReEngage Login] [DD] Step 3: Password field not found");
   }
 
+  console.log("[ReEngage Login] [DD] Waiting for OTP screen (10s)...");
   await sleep(10000);
 
   // Step 4: Handle OTP if needed
   const otpField = document.querySelector(LOGIN_SELECTORS.DOORDASH_OTP);
   if (otpField) {
-    let otp = await fetchOtp(
-      `https://internal.loopapplication.xyz/get_last_otp?username=${encodeURIComponent(username)}`
-    );
-    otp = otp.replace(/"/g, "");
-    await typeIntoField(LOGIN_SELECTORS.DOORDASH_OTP, otp);
-    simulateClick(document.querySelector("#prism-modal-footer > button:nth-child(2)"));
-    await sleep(4000);
+    console.log("[ReEngage Login] [DD] Step 4: OTP field found. Fetching OTP...");
+    try {
+      let otp = await fetchOtp(
+        `https://internal.loopapplication.xyz/get_last_otp?username=${encodeURIComponent(username)}`
+      );
+      otp = otp.replace(/"/g, "").trim();
+      console.log(`[ReEngage Login] [DD] OTP received: ${otp.length} chars`);
+      await typeIntoField(LOGIN_SELECTORS.DOORDASH_OTP, otp);
+      simulateClick(document.querySelector("#prism-modal-footer > button:nth-child(2)"));
+      await sleep(4000);
+      console.log("[ReEngage Login] [DD] OTP submitted");
+    } catch (e) {
+      console.error("[ReEngage Login] [DD] OTP fetch/fill failed:", e);
+    }
+  } else {
+    console.log("[ReEngage Login] [DD] Step 4: No OTP field — login may have completed");
   }
+  return true;
 }
 
 // ── UberEats Login ──
 async function loginUberEats(username, password, storeId) {
   await sleep(4000);
 
-  // Set redirect URL for after login
-  if (storeId) {
-    const nextUrl = `https://merchants.ubereats.com/manager/home/${storeId}`;
-    const params = new URLSearchParams(window.location.search);
-    if (!window.location.href.includes(storeId)) {
-      params.set("next_url", nextUrl);
-      const newUrl = window.location.origin + window.location.pathname + "?" + params.toString();
-      window.history.pushState({ path: newUrl }, "", newUrl);
-      window.location = newUrl;
-      return;
-    }
-  }
-
   // Step 1: Enter username
-  if (document.querySelector(LOGIN_SELECTORS.UBER_USERNAME)) {
-    await typeIntoField(LOGIN_SELECTORS.UBER_USERNAME, username);
-    simulateClick(document.querySelector(LOGIN_SELECTORS.UBER_NEXT_BUTTON));
+  const usernameField = document.querySelector(LOGIN_SELECTORS.UBER_USERNAME);
+  if (!usernameField) {
+    console.log("[ReEngage Login] UberEats username field not found");
+    return false;
+  }
+  await typeIntoField(LOGIN_SELECTORS.UBER_USERNAME, username);
+  simulateClick(document.querySelector(LOGIN_SELECTORS.UBER_NEXT_BUTTON));
+
+  // Step 2: Wait for OTP or password screen to appear
+  console.log("[ReEngage Login] Waiting for OTP or password screen...");
+  let otpFields = null;
+  let passwordField = null;
+  for (let attempt = 0; attempt < 15; attempt++) {
+    await sleep(2000);
+    otpFields = document.querySelectorAll(LOGIN_SELECTORS.UBER_OTP);
+    passwordField = document.querySelector(LOGIN_SELECTORS.UBER_PASSWORD);
+    console.log(`[ReEngage Login] Attempt ${attempt + 1}: otpFields=${otpFields.length}, passwordField=${!!passwordField}`);
+    if (otpFields.length > 0 || passwordField) break;
   }
 
-  await sleep(5000);
-
-  // Step 2: Handle OTP if needed
-  const otpFields = document.querySelectorAll(LOGIN_SELECTORS.UBER_OTP);
-  if (otpFields.length > 0) {
-    let otp = await fetchOtp(
-      `https://internal.loopapplication.xyz/get_last_uber_otp?username=${encodeURIComponent(username)}`
-    );
-    otp = otp.replace(/"/g, "");
-    for (const [index, char] of otp.split("").entries()) {
-      await typeIntoFieldElement(otpFields[index], char);
-      await sleep(500);
+  // Handle OTP if found
+  if (otpFields && otpFields.length > 0) {
+    console.log(`[ReEngage Login] OTP fields found (${otpFields.length}). Fetching OTP...`);
+    try {
+      let otp = await fetchOtp(
+        `https://internal.loopapplication.xyz/get_last_uber_otp?username=${encodeURIComponent(username)}`
+      );
+      otp = otp.replace(/"/g, "").trim();
+      console.log(`[ReEngage Login] OTP received: ${otp.length} chars`);
+      for (const [index, char] of otp.split("").entries()) {
+        if (otpFields[index]) {
+          await typeIntoFieldElement(otpFields[index], char);
+          await sleep(500);
+        }
+      }
+      await sleep(2000);
+      simulateClick(document.querySelector(LOGIN_SELECTORS.UBER_NEXT_BUTTON));
+      console.log("[ReEngage Login] OTP submitted");
+    } catch (e) {
+      console.error("[ReEngage Login] OTP fetch/fill failed:", e);
     }
-    await sleep(4000);
-    simulateClick(document.querySelector(LOGIN_SELECTORS.UBER_NEXT_BUTTON));
+
+    // After OTP, might need password
+    await sleep(5000);
+    passwordField = document.querySelector(LOGIN_SELECTORS.UBER_PASSWORD);
   }
 
-  // Step 3: Enter password if needed
-  if (document.querySelector(LOGIN_SELECTORS.UBER_PASSWORD)) {
+  // Handle password if found
+  if (passwordField) {
+    console.log("[ReEngage Login] Password field found. Entering password...");
     await typeIntoField(LOGIN_SELECTORS.UBER_PASSWORD, password);
     simulateClick(document.querySelector(LOGIN_SELECTORS.UBER_NEXT_BUTTON));
+    console.log("[ReEngage Login] Password submitted");
   }
+
+  return true;
 }
 
 // ── Helpers ──

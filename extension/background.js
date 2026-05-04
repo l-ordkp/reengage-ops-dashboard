@@ -35,6 +35,13 @@ chrome.declarativeNetRequest.onRuleMatchedDebug.addListener((e) => {
 
     console.log(`[ReEngage Login] Intercepted login request for ${platform}`);
 
+    // Build login URL with store redirect for UberEats
+    let loginUrl = config.loginUrl;
+    if (platform === "UBEREATS" && storeId) {
+      const nextUrl = encodeURIComponent(`https://merchants.ubereats.com/manager/home/${storeId}`);
+      loginUrl = `https://merchants.ubereats.com/manager/?next_url=${nextUrl}`;
+    }
+
     // Clear cookies/cache for this platform, then navigate to login page
     chrome.browsingData.remove({ origins: config.origins }, {
       cacheStorage: true,
@@ -50,7 +57,7 @@ chrome.declarativeNetRequest.onRuleMatchedDebug.addListener((e) => {
         login_platform: platform,
         login_store_id: storeId,
       }, () => {
-        chrome.tabs.update(e.tabId, { url: config.loginUrl });
+        chrome.tabs.update(e.tabId, { url: loginUrl });
       });
     });
   } catch (err) {
@@ -193,6 +200,107 @@ function getApiBase() {
 
 // ── Message handler ──
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Login trigger from login_trigger.js on extension page
+  if (message.type === "TRIGGER_LOGIN") {
+    const { platform, username, password, storeId, reviewUrl } = message;
+    console.log(`[ReEngage BG] TRIGGER_LOGIN received. platform=${platform}, username=${username ? "***" : "EMPTY"}, storeId=${storeId}, reviewUrl=${reviewUrl}`);
+    console.log(`[ReEngage BG] sender.tab=`, sender.tab ? `tabId=${sender.tab.id}, url=${sender.tab.url}` : "NO TAB");
+
+    const config = LOGIN_PLATFORM_CONFIG[platform];
+    if (!config) {
+      console.error(`[ReEngage BG] Unknown platform: ${platform}`);
+      sendResponse({ ok: false, error: "Unknown platform" });
+      return;
+    }
+
+    let loginUrl = config.loginUrl;
+    if (platform === "UBEREATS") {
+      const afterLogin = reviewUrl || (storeId ? `https://merchants.ubereats.com/manager/home/${storeId}/feedback/reviews` : "");
+      if (afterLogin) {
+        loginUrl = `https://merchants.ubereats.com/manager/?next_url=${encodeURIComponent(afterLogin)}`;
+      }
+    } else if (platform === "DOORDASH") {
+      // DoorDash doesn't support next_url, but we store the review URL for later redirect
+      if (reviewUrl) {
+        chrome.storage.local.set({ login_redirect_after: reviewUrl });
+      }
+    }
+    console.log(`[ReEngage BG] loginUrl=${loginUrl}`);
+
+    // Smart check: if same account AND platform cookies still exist, skip re-login
+    const cookieDomain = platform === "UBEREATS" ? ".ubereats.com" : ".doordash.com";
+    const cookieUrl = platform === "UBEREATS" ? "https://merchants.ubereats.com" : "https://www.doordash.com";
+
+    chrome.storage.local.get(["login_last_username", "login_last_platform"], (prev) => {
+      const sameAccount = prev.login_last_username === username && prev.login_last_platform === platform;
+
+      if (!sameAccount || !reviewUrl) {
+        doFullLogin();
+        return;
+      }
+
+      // Same account — check if session cookie still exists
+      chrome.cookies.getAll({ domain: cookieDomain }, (cookies) => {
+        const hasSession = cookies && cookies.length > 5; // platform sets many cookies when logged in
+        console.log(`[ReEngage BG] Same account. Cookies for ${cookieDomain}: ${cookies?.length || 0}. hasSession=${hasSession}`);
+
+        if (hasSession) {
+          console.log(`[ReEngage BG] Session alive — going directly to review.`);
+          if (sender.tab) {
+            chrome.tabs.update(sender.tab.id, { url: reviewUrl }, () => {
+              sendResponse({ ok: true, loginUrl: reviewUrl, skippedLogin: true });
+            });
+          } else {
+            chrome.tabs.create({ url: reviewUrl }, () => {
+              sendResponse({ ok: true, loginUrl: reviewUrl, skippedLogin: true, newTab: true });
+            });
+          }
+        } else {
+          console.log(`[ReEngage BG] Session expired — doing full login.`);
+          doFullLogin();
+        }
+      });
+      return;
+
+      function doFullLogin() {
+        console.log(`[ReEngage BG] Full login — clearing cookies`);
+        chrome.browsingData.remove({ origins: config.origins }, {
+          cacheStorage: true,
+          cookies: true,
+          localStorage: true,
+          indexedDB: true,
+          webSQL: true
+        }, () => {
+          if (chrome.runtime.lastError) {
+            console.error(`[ReEngage BG] browsingData.remove error:`, chrome.runtime.lastError.message);
+          }
+          console.log(`[ReEngage BG] Cookies cleared. Storing credentials...`);
+          chrome.storage.local.set({
+            login_username: username,
+            login_password: password,
+            login_platform: platform,
+            login_store_id: storeId,
+            login_last_username: username,
+            login_last_platform: platform,
+          }, () => {
+            console.log(`[ReEngage BG] Credentials stored. Redirecting tab...`);
+            if (sender.tab) {
+              chrome.tabs.update(sender.tab.id, { url: loginUrl }, () => {
+                console.log(`[ReEngage BG] Tab redirected to ${loginUrl}`);
+                sendResponse({ ok: true, loginUrl });
+              });
+            } else {
+              chrome.tabs.create({ url: loginUrl }, () => {
+                sendResponse({ ok: true, loginUrl, newTab: true });
+              });
+            }
+          });
+        });
+      }
+    });
+    return true; // async response
+  }
+
   if (message.type === "GET_DELIVERY_UUID" && sender.tab) {
     const storageKey = `tab_${sender.tab.id}`;
     chrome.storage.session.get(storageKey, (result) => {

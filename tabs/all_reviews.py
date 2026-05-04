@@ -1,8 +1,10 @@
-"""All Reviews tab — global review browser with filters."""
+"""All Reviews tab — global review browser with filters and pagination."""
 
 import streamlit as st
 
 from config import PRIORITY_ICON, STATUS_ICON
+
+PAGE_SIZE = 50
 
 
 def render(df_all, chains, platforms):
@@ -18,7 +20,17 @@ def render(df_all, chains, platforms):
     if f_st != "All": df_filt = df_filt[df_filt["status"]     == f_st]
     if f_pr != "All": df_filt = df_filt[df_filt["priority"]   == f_pr]
 
-    st.caption(f"{len(df_filt):,} reviews")
+    # Reset page when filters change
+    filter_key = f"{f_ch}|{f_pl}|{f_st}|{f_pr}"
+    if st.session_state.get("ar_prev_filters") != filter_key:
+        st.session_state["ar_page"] = 0
+        st.session_state["ar_prev_filters"] = filter_key
+
+    total = len(df_filt)
+    total_pages = max(1, (total - 1) // PAGE_SIZE + 1)
+    page = min(st.session_state.get("ar_page", 0), total_pages - 1)
+
+    st.caption(f"{total:,} reviews")
 
     if not df_filt.empty:
         show_cols = [
@@ -35,8 +47,13 @@ def render(df_all, chains, platforms):
         disp = df_filt[[c for c in show_cols if c in df_filt.columns]].copy()
         disp["priority"] = disp["priority"].map(lambda x: f"{PRIORITY_ICON.get(x,'')} {x}")
         disp["status"]   = disp["status"].map(lambda x: f"{STATUS_ICON.get(x,'')} {x}")
+
+        # Pagination
+        start = page * PAGE_SIZE
+        page_df = disp.iloc[start:start + PAGE_SIZE]
+
         st.dataframe(
-            disp.head(200), use_container_width=True, hide_index=True,
+            page_df, use_container_width=True, hide_index=True,
             column_config={
                 "days_left":      st.column_config.NumberColumn("Days", width="small"),
                 "portal_link":    st.column_config.LinkColumn("Portal"),
@@ -47,5 +64,19 @@ def render(df_all, chains, platforms):
                 "orders_count":   st.column_config.NumberColumn("Orders"),
             },
         )
+
+        # Page controls
+        col_prev, col_info, col_next = st.columns([1, 2, 1])
+        with col_prev:
+            if st.button("Previous", disabled=page == 0, key="ar_prev"):
+                st.session_state["ar_page"] = page - 1
+                st.rerun()
+        with col_info:
+            st.caption(f"Page {page + 1} of {total_pages} ({total:,} total)")
+        with col_next:
+            if st.button("Next", disabled=page >= total_pages - 1, key="ar_next"):
+                st.session_state["ar_page"] = page + 1
+                st.rerun()
+
         st.download_button("Download CSV", df_filt.to_csv(index=False),
                            file_name="reengage_reviews.csv", mime="text/csv")

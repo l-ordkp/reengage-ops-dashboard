@@ -2,5 +2,12 @@
 __pycache__/
 *.pyc
 .env
+.env.local
 venv/
 reengage_v2.db
+reengage_v2.db-shm
+reengage_v2.db-wal
+extension/_metadata/
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local

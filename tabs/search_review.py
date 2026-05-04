@@ -68,12 +68,11 @@ def render(df_all):
             st.info("Enter a customer name (at least 2 characters) and optionally select a chain.")
             return
 
-        mask = df_all["customer_name"].astype(str).str.lower().str.contains(
+        subset = df_all if chain_filter == "All" else df_all[df_all["chain_name"] == chain_filter]
+        mask = subset["customer_name"].astype(str).str.lower().str.contains(
             cust_name.strip().lower(), na=False)
-        if chain_filter != "All":
-            mask &= df_all["chain_name"] == chain_filter
 
-        results = df_all[mask].copy()
+        results = subset[mask].copy()
 
         if results.empty:
             st.warning(f"No reviews found for customer '{cust_name}'"

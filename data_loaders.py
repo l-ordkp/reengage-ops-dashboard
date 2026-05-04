@@ -17,7 +17,7 @@ from db import bq_read
 
 # ── Reviews (existing tables, read-only) ─────────────────────────────────────
 
-@st.cache_data(ttl=120, show_spinner="Loading reviews from BigQuery...")
+@st.cache_data(ttl=300, show_spinner="Loading reviews from BigQuery...")
 def load_reviews() -> pd.DataFrame:
     sql = f"""
     WITH eligible_reviews AS (
@@ -164,13 +164,14 @@ def load_reviews() -> pd.DataFrame:
 
 # ── Assignments (BQ v2 table) ────────────────────────────────────────────────
 
-@st.cache_data(ttl=30, show_spinner="Loading assignments...")
+@st.cache_data(ttl=120, show_spinner="Loading assignments...")
 def load_assignments() -> pd.DataFrame:
     return bq_read(f"""
         SELECT assignment_id, review_uid, order_id, operator_email,
                chain_name, platform, days_left, status, assigned_at, completed_at
         FROM `{TABLE_ASSIGNMENTS}`
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
+          AND status != 'reassigned'
         ORDER BY assigned_at DESC
     """)
 
@@ -259,7 +260,7 @@ def load_configs_for_matching() -> list[dict]:
 
 # ── Ops log (BQ v2 table) ───────────────────────────────────────────────────
 
-@st.cache_data(ttl=30, show_spinner="Loading ops log...")
+@st.cache_data(ttl=60, show_spinner="Loading ops log...")
 def load_ops_log() -> pd.DataFrame:
     return bq_read(f"""
         SELECT id, review_uid, platform, chain_name, action,
@@ -267,4 +268,63 @@ def load_ops_log() -> pd.DataFrame:
         FROM `{TABLE_OPS_LOG}`
         ORDER BY processing_timestamp DESC
         LIMIT 500
+    """)
+
+
+# ── Operator performance metrics (BQ v2 table) ────────────────────────────
+
+@st.cache_data(ttl=120, show_spinner="Loading operator metrics...")
+def load_operator_performance() -> pd.DataFrame:
+    return bq_read(f"""
+        SELECT
+            operator_email,
+            COUNT(*) AS total_assigned,
+            COUNTIF(DATE(assigned_at, 'America/Chicago') = CURRENT_DATE('America/Chicago')) AS assigned_today,
+            COUNTIF(assigned_at >= TIMESTAMP(DATE_TRUNC(CURRENT_DATE('America/Chicago'), WEEK(MONDAY)))) AS assigned_this_week,
+            COUNTIF(status = 'completed') AS completed,
+            COUNTIF(status = 'expired') AS expired,
+            COUNTIF(status = 'pending') AS pending,
+            SAFE_DIVIDE(COUNTIF(status = 'completed'),
+                COUNTIF(status IN ('completed', 'expired'))) * 100 AS completion_rate
+        FROM `{TABLE_ASSIGNMENTS}`
+        WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
+          AND status != 'reassigned'
+        GROUP BY operator_email
+    """)
+
+
+@st.cache_data(ttl=300, show_spinner="Loading daily breakdown...")
+def load_operator_daily_breakdown() -> pd.DataFrame:
+    return bq_read(f"""
+        SELECT
+            operator_email,
+            DATE(assigned_at, 'America/Chicago') AS assign_date,
+            COUNT(*) AS assigned,
+            COUNTIF(status = 'completed') AS completed,
+            COUNTIF(status = 'expired') AS expired,
+            COUNTIF(status = 'pending') AS pending,
+            SAFE_DIVIDE(COUNTIF(status = 'completed'),
+                COUNTIF(status IN ('completed', 'expired'))) * 100 AS completion_pct
+        FROM `{TABLE_ASSIGNMENTS}`
+        WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
+          AND status != 'reassigned'
+        GROUP BY operator_email, assign_date
+        ORDER BY assign_date DESC, operator_email
+    """)
+
+
+@st.cache_data(ttl=300, show_spinner="Loading chain breakdown...")
+def load_operator_chain_breakdown() -> pd.DataFrame:
+    return bq_read(f"""
+        SELECT
+            operator_email, chain_name, platform,
+            COUNT(*) AS assigned,
+            COUNTIF(status = 'completed') AS completed,
+            COUNTIF(status = 'expired') AS expired,
+            COUNTIF(status = 'pending') AS pending
+        FROM `{TABLE_ASSIGNMENTS}`
+        WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
+          AND status != 'reassigned'
+        GROUP BY operator_email, chain_name, platform
+        ORDER BY operator_email, assigned DESC
     """)

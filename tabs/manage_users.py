@@ -5,6 +5,7 @@ import streamlit as st
 from config import ALL_ROLES, ROLE_LEAD, ROLE_TENURED, ROLE_NEW
 from auth import load_all_users, add_user, update_user_role, update_user_approval, remove_user
 from assignment import run_assignment
+from data_loaders import load_reviews, load_assignments
 
 ROLE_LABELS = {
     ROLE_LEAD: "Lead",
@@ -67,7 +68,8 @@ def render(current_user_email):
             else:
                 add_user(new_email.strip(), new_name.strip(), new_role, new_reduction, current_user_email)
                 st.success(f"Added {new_email} as {ROLE_LABELS[new_role]}")
-                st.cache_data.clear()
+                load_reviews.clear()
+                load_assignments.clear()
                 st.rerun()
 
     # ── Edit / delete existing user ──
@@ -101,27 +103,31 @@ def render(current_user_email):
                     update_user_role(edit_email, new_role_edit,
                                      new_reduction_edit if new_role_edit == ROLE_NEW else 0.0)
                     st.success(f"Updated {edit_email}")
-                    st.cache_data.clear()
+                    load_reviews.clear()
+                    load_assignments.clear()
                     st.rerun()
             with c2:
                 if selected["approved"]:
                     if st.button("Revoke access", key="mu_revoke", type="secondary"):
                         update_user_approval(edit_email, False)
                         st.success(f"Revoked access for {edit_email}")
-                        st.cache_data.clear()
+                        load_reviews.clear()
+                        load_assignments.clear()
                         st.rerun()
                 else:
                     if st.button("Approve access", key="mu_approve", type="primary"):
                         update_user_approval(edit_email, True)
                         st.success(f"Approved {edit_email}")
-                        st.cache_data.clear()
+                        load_reviews.clear()
+                        load_assignments.clear()
                         st.rerun()
             with c3:
                 if edit_email != current_user_email:
                     if st.button("🗑 Delete user", key="mu_remove", type="secondary"):
                         remove_user(edit_email)
                         st.success(f"Removed {edit_email}")
-                        st.cache_data.clear()
+                        load_reviews.clear()
+                        load_assignments.clear()
                         st.rerun()
                 else:
                     st.caption("_Can't delete yourself_")
@@ -132,9 +138,15 @@ def render(current_user_email):
     st.divider()
     st.markdown("**Run assignment engine**")
     st.caption("Normally runs at 8 AM daily. Use this button to trigger manually.")
+    full_reassign = st.checkbox(
+        "Full reassignment (redistribute ALL pending reviews equally)",
+        value=False, key="mu_full_reassign",
+        help="When checked, all pending reviews are redistributed from scratch for equal distribution. "
+             "When unchecked, only new unassigned reviews are distributed.",
+    )
     if st.button("🔄 Run assignment now", key="mu_run_assign"):
         with st.spinner("Assigning reviews..."):
-            result = run_assignment()
+            result = run_assignment(full_reassign=full_reassign)
         if "error" in result:
             st.error(result["error"])
         else:
@@ -144,5 +156,6 @@ def render(current_user_email):
                 for email, info in result["per_operator"].items():
                     st.caption(f"  {email}: {info['count']} reviews, "
                                f"{info['chain_platforms']} chain×platform combos")
-            st.cache_data.clear()
+            load_reviews.clear()
+            load_assignments.clear()
             st.rerun()

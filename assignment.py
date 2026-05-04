@@ -12,6 +12,7 @@ Distributes pending reviews to operators, optimising for:
 
 from __future__ import annotations
 
+import random
 import uuid
 from collections import defaultdict
 
@@ -20,9 +21,9 @@ import pandas as pd
 from config import ROLE_LEAD, ROLE_NEW, TABLE_USERS, TABLE_ASSIGNMENTS
 from db import bq_read
 from data_loaders import load_reviews
-from write_helpers import insert_assignments, expire_stale_assignments, log_action
+from write_helpers import insert_assignments, expire_stale_assignments, void_pending_assignments, log_action
 
-SOFT_CAP_MULTIPLIER = 1.25  # 125% of weighted average
+SOFT_CAP_MULTIPLIER = 1.20  # 125% of weighted average
 
 
 def _load_operators() -> pd.DataFrame:
@@ -44,8 +45,11 @@ def _load_already_assigned_uids() -> set:
     return set(df["review_uid"].tolist()) if not df.empty else set()
 
 
-def run_assignment() -> dict:
+def run_assignment(full_reassign: bool = True) -> dict:
     expire_stale_assignments()
+
+    if full_reassign:
+        void_pending_assignments()
 
     reviews = load_reviews()
     operators = _load_operators()
@@ -59,10 +63,11 @@ def run_assignment() -> dict:
     if pending.empty:
         return {"info": "No pending reviews", "assigned": 0}
 
-    already_assigned = _load_already_assigned_uids()
-    pending = pending[~pending["review_uid"].isin(already_assigned)]
-    if pending.empty:
-        return {"info": "All pending reviews already assigned", "assigned": 0}
+    if not full_reassign:
+        already_assigned = _load_already_assigned_uids()
+        pending = pending[~pending["review_uid"].isin(already_assigned)]
+        if pending.empty:
+            return {"info": "All pending reviews already assigned", "assigned": 0}
 
     pending = pending.sort_values("days_left", ascending=True)
 
@@ -79,6 +84,9 @@ def run_assignment() -> dict:
             "groups": [],       # list of (chain, platform) tuples
             "chains": set(),    # unique chains handled
         })
+
+    # Shuffle so the first operator doesn't always get the largest bundle
+    random.shuffle(ops)
 
     total_weight = sum(o["weight"] for o in ops)
     total_reviews = len(pending)

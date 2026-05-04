@@ -62,6 +62,16 @@ def expire_stale_assignments():
     """)
 
 
+def void_pending_assignments():
+    """Mark all current pending assignments as 'reassigned' before a full
+    redistribution run. Preserves audit trail (no DELETE)."""
+    bq_exec(f"""
+    UPDATE `{TABLE_ASSIGNMENTS}`
+    SET status = 'reassigned'
+    WHERE status = 'pending'
+    """)
+
+
 def insert_assignments(rows: list[dict]):
     if not rows:
         return

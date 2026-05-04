@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from config import PRIORITY_ICON, STATUS_ICON
-from data_loaders import load_my_assignments, load_configs_for_matching
+from data_loaders import load_my_assignments, load_configs_for_matching, load_assignments, load_reviews
 from write_helpers import log_action, mark_assignment_completed
 
 
@@ -166,7 +166,8 @@ def render(df_all, user_email):
         if asgn_id:
             mark_assignment_completed(asgn_id, user_email)
         st.success("Done!")
-        st.cache_data.clear()
+        load_my_assignments.clear()
+        load_assignments.clear()
         st.rerun()
 
 
@@ -215,5 +216,7 @@ def _generate_responses(no_response_df, user_email):
     log_action("batch", "all", "all", "generate_responses", user_email, user_email,
                f"Generated {success}, skipped {skipped}, failed {failed}")
 
-    st.cache_data.clear()
+    load_my_assignments.clear()
+    load_assignments.clear()
+    load_reviews.clear()
     st.rerun()

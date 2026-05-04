@@ -1,0 +1,93 @@
+"""Operators routes — performance metrics, daily breakdown, chain breakdown, queue."""
+
+from typing import Optional
+
+import pandas as pd
+from fastapi import APIRouter, Depends
+
+from backend.auth.dependencies import require_lead
+from backend.auth.user_crud import load_all_users
+from backend.data_loaders import (
+    load_operator_performance,
+    load_operator_daily_breakdown,
+    load_operator_chain_breakdown,
+    load_assignments,
+    load_reviews,
+)
+from backend.db import _df_to_dicts
+
+router = APIRouter(prefix="/api/operators", tags=["operators"])
+
+
+@router.get("/performance")
+def performance(user: dict = Depends(require_lead)):
+    perf = load_operator_performance()
+    users_df = load_all_users()
+
+    if not perf.empty and not users_df.empty:
+        perf = perf.merge(
+            users_df[["email", "name", "role"]],
+            left_on="operator_email", right_on="email", how="left",
+        ).drop(columns=["email"], errors="ignore")
+
+    return _df_to_dicts(perf)
+
+
+@router.get("/daily-breakdown")
+def daily_breakdown(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user: dict = Depends(require_lead),
+):
+    daily = load_operator_daily_breakdown()
+    users_df = load_all_users()
+
+    if not daily.empty and not users_df.empty:
+        daily = daily.merge(
+            users_df[["email", "name"]],
+            left_on="operator_email", right_on="email", how="left",
+        ).drop(columns=["email"], errors="ignore")
+        daily["name"] = daily["name"].fillna(daily["operator_email"])
+
+    if date_from and not daily.empty:
+        daily = daily[daily["assign_date"] >= pd.Timestamp(date_from).date()]
+    if date_to and not daily.empty:
+        daily = daily[daily["assign_date"] <= pd.Timestamp(date_to).date()]
+
+    return _df_to_dicts(daily)
+
+
+@router.get("/chain-breakdown")
+def chain_breakdown(
+    operator_email: Optional[str] = None,
+    user: dict = Depends(require_lead),
+):
+    data = load_operator_chain_breakdown()
+    if operator_email and not data.empty:
+        data = data[data["operator_email"] == operator_email]
+    return _df_to_dicts(data)
+
+
+@router.get("/{email}/queue")
+def operator_queue(email: str, user: dict = Depends(require_lead)):
+    assignments = load_assignments()
+    pending = assignments[(assignments["status"] == "pending") & (assignments["operator_email"] == email)]
+
+    if pending.empty:
+        return {"reviews": [], "combos": []}
+
+    uids = set(pending["review_uid"].tolist())
+    df_all = load_reviews()
+    df_op = df_all[df_all["review_uid"].isin(uids)].copy()
+    df_op = df_op.sort_values(["chain_name", "platform", "days_left"])
+
+    combos = df_op.groupby(["chain_name", "platform"]).agg(
+        count=("review_uid", "count"),
+        critical=("priority", lambda x: int((x == "CRITICAL").sum())),
+        min_days=("days_left", "min"),
+    ).reset_index()
+
+    return {
+        "reviews": _df_to_dicts(df_op),
+        "combos": _df_to_dicts(combos),
+    }

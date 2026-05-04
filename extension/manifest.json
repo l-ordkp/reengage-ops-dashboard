@@ -73,6 +73,12 @@
     "default_popup": "popup.html",
     "default_title": "ReEngage Response Copier"
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["login_redirect.html", "login_trigger.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "icons": {
     "48": "icon48.png",
     "128": "icon128.png"

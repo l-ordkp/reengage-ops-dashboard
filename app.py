@@ -64,7 +64,8 @@ with st.sidebar:
 
     st.divider()
     if st.button("🔄 Refresh data"):
-        st.cache_data.clear()
+        load_reviews.clear()
+        load_response_configs.clear()
         st.rerun()
 
     if st.button("Sign out"):
