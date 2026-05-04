@@ -2,9 +2,10 @@
 
 import { useState, useCallback } from "react";
 import { format } from "date-fns";
-import { FiDownload, FiChevronLeft, FiChevronRight, FiExternalLink, FiCopy, FiCheck } from "react-icons/fi";
+import { FiDownload, FiChevronLeft, FiChevronRight, FiCopy, FiCheck } from "react-icons/fi";
 import { useReviews, useReviewFilters } from "@/hooks/useReviews";
 import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON } from "@/lib/constants";
+import PortalLoginLink from "@/components/shared/PortalLoginLink";
 import type { Review } from "@/lib/types";
 
 const PAGE_SIZE = 50;
@@ -199,18 +200,7 @@ export default function ReviewsPage() {
                     {r.review_date ? format(new Date(r.review_date), "MMM dd") : "-"}
                   </td>
                   <td className="px-4 py-3">
-                    {r.portal_link ? (
-                      <a
-                        href={r.portal_link}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-400 hover:text-blue-300"
-                      >
-                        <FiExternalLink size={14} />
-                      </a>
-                    ) : (
-                      <span className="text-gray-600">-</span>
-                    )}
+                    <PortalLoginLink review={r} />
                   </td>
                 </tr>
               ))

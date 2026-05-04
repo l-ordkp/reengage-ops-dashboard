@@ -9,6 +9,7 @@ import {
   useOperatorQueue,
 } from "@/hooks/useOperators";
 import { PRIORITY_ICON, STATUS_ICON } from "@/lib/constants";
+import PortalLoginLink from "@/components/shared/PortalLoginLink";
 import type { OperatorPerformance, DailyBreakdown, ChainBreakdown, Review } from "@/lib/types";
 
 export default function OperatorsPage() {
@@ -305,7 +306,7 @@ export default function OperatorsPage() {
                           <td className="px-3 py-2 max-w-48 truncate">{r.review_text}</td>
                           <td className="px-3 py-2 max-w-48 truncate">{r.response_text || "—"}</td>
                           <td className="px-3 py-2 text-gray-400">{r.review_date}</td>
-                          <td className="px-3 py-2">{r.portal_link ? <a href={r.portal_link} target="_blank" className="text-[#FF4B4B] hover:underline">Open</a> : "—"}</td>
+                          <td className="px-3 py-2"><PortalLoginLink review={r} /></td>
                         </tr>
                       ))}
                     </tbody>

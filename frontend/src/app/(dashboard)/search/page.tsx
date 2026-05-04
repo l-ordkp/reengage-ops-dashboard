@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { format } from "date-fns";
-import { FiSearch, FiExternalLink, FiCopy, FiCheck } from "react-icons/fi";
+import { FiSearch, FiCopy, FiCheck } from "react-icons/fi";
+import PortalLoginLink from "@/components/shared/PortalLoginLink";
 import { useAuth } from "@/providers/AuthProvider";
 import { useReviewFilters } from "@/hooks/useReviews";
 import api from "@/lib/api";
@@ -170,12 +171,9 @@ export default function SearchPage() {
                     {r.days_left}d left
                   </span>
                 )}
-                {r.portal_link && (
-                  <a href={r.portal_link} target="_blank" rel="noopener noreferrer"
-                    className="ml-auto text-blue-400 hover:text-blue-300 flex items-center gap-1 text-sm">
-                    <FiExternalLink size={13} /> Portal
-                  </a>
-                )}
+                <div className="ml-auto">
+                  <PortalLoginLink review={r} />
+                </div>
               </div>
 
               {/* Info grid */}

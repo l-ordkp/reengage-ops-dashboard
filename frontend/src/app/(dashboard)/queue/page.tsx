@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { format } from "date-fns";
-import { FiExternalLink, FiCheckCircle, FiZap } from "react-icons/fi";
+import { FiCheckCircle, FiZap } from "react-icons/fi";
+import PortalLoginLink from "@/components/shared/PortalLoginLink";
 import { useMyQueue, useMarkCompleted, useGenerateResponses } from "@/hooks/useMyQueue";
 import { useReviewFilters, useReviewStats } from "@/hooks/useReviews";
 import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON } from "@/lib/constants";
@@ -22,7 +23,7 @@ export default function QueuePage() {
   const markCompleted = useMarkCompleted();
   const generateResponses = useGenerateResponses();
 
-  let reviews: Review[] = data?.reviews || [];
+  let reviews: Review[] = (data?.reviews || []).filter((r) => r.status !== "EXPIRED");
 
   const pendingCount = reviews.filter((r) => r.status === "PENDING").length;
   const criticalCount = reviews.filter((r) => r.priority === "CRITICAL").length;
@@ -186,30 +187,7 @@ export default function QueuePage() {
                     {r.review_date ? format(new Date(r.review_date), "MMM dd") : "-"}
                   </td>
                   <td className="px-4 py-3">
-                    {r.portal_username && r.portal_password ? (
-                      <a
-                        href={`chrome-extension://jkjmledlhnfnendfbkeppljnmdibhcgo/login_redirect.html?${new URLSearchParams({
-                          platform: r.platform === "UberEats" ? "UBEREATS" : "DOORDASH",
-                          username: r.portal_username,
-                          password: r.portal_password,
-                          store_id: r.store_id || "",
-                          review_url: r.portal_link || "",
-                        }).toString()}`}
-                        target="_blank"
-                        className="text-[#FF4B4B] hover:text-[#E04343] flex items-center gap-1 text-xs font-medium"
-                      >
-                        <FiExternalLink size={13} />
-                        Login to Portal
-                      </a>
-                    ) : r.portal_link ? (
-                      <a href={r.portal_link} target="_blank" rel="noopener noreferrer"
-                        className="text-blue-400 hover:text-blue-300 flex items-center gap-1 text-xs">
-                        <FiExternalLink size={13} />
-                        Portal
-                      </a>
-                    ) : (
-                      <span className="text-gray-600">-</span>
-                    )}
+                    <PortalLoginLink review={r} />
                   </td>
                   <td className="px-4 py-3">
                     {r.status === "PENDING" && (
