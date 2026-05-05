@@ -37,9 +37,11 @@
       const repliedDiscount = qc.replied_discount || "NONE";
 
       const exactMatchResponse = repliedResponse.trim() === aiResponse.trim();
-      const exactMatchDiscount = (repliedDiscount === "NONE" && (aiCoupon === "0" || aiCoupon === "0.0"))
-        || repliedDiscount === aiCoupon
-        || repliedDiscount === `$${aiCoupon}`;
+      // Discount match: check if coupon was applied when expected (or not applied when not expected)
+      // UberEats uses tier names (NONE, TIER_1, TIER_2, etc.) not dollar amounts
+      const couponExpected = aiCoupon !== "0" && aiCoupon !== "0.0";
+      const couponApplied = repliedDiscount !== "NONE" && repliedDiscount !== "" && repliedDiscount !== "0";
+      const exactMatchDiscount = couponExpected === couponApplied;
 
       console.log(`[ReEngage QC] Response match: ${exactMatchResponse}, Discount match: ${exactMatchDiscount}`);
       console.log(`[ReEngage QC] Replied: "${repliedResponse.slice(0, 50)}..." | AI: "${aiResponse.slice(0, 50)}..."`);
