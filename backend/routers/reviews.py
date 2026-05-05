@@ -24,7 +24,7 @@ def list_reviews(
     page_size: int = 50,
     user: dict = Depends(get_current_user),
 ):
-    df = load_reviews().copy()
+    df = load_reviews().drop_duplicates(subset=["review_uid"], keep="first").copy()
 
     if chain_name and chain_name != "All":
         df = df[df["chain_name"] == chain_name]
@@ -158,6 +158,9 @@ def search_reviews(
     else:
         return []
 
+    # Dedup by review_uid and order_id (JOIN with review_responses can create dupes)
+    results = results.drop_duplicates(subset=["review_uid", "order_id"], keep="first")
+
     # Enrich with assignment info
     from backend.data_loaders import load_assignments
     assignments = load_assignments()
@@ -179,6 +182,31 @@ def search_reviews(
                 r["assigned_to"] = asgn["assigned_to"]
                 r["assignment_status"] = asgn["assignment_status"]
                 r["assigned_at"] = asgn["assigned_at"]
+
+    # Enrich with QC data from ops_log
+    from backend.data_loaders import load_ops_log
+    ops = load_ops_log()
+    if not ops.empty:
+        qc_ops = ops[
+            (ops["action"] == "mark_responded") &
+            (ops["remarks"].str.contains("resp:", na=False))
+        ]
+        if not qc_ops.empty:
+            # Latest QC entry per review_uid
+            qc_latest = qc_ops.sort_values("processing_timestamp", ascending=False).drop_duplicates("review_uid", keep="first")
+            qc_map = {}
+            for _, o in qc_latest.iterrows():
+                remarks = str(o["remarks"])
+                qc_map[o["review_uid"]] = {
+                    "qc_response_match": "resp:exact" in remarks,
+                    "qc_discount_match": "disc:exact" in remarks,
+                    "qc_remarks": remarks,
+                }
+            for r in review_results:
+                qc = qc_map.get(r.get("review_uid"))
+                if qc:
+                    r["qc_response_match"] = qc["qc_response_match"]
+                    r["qc_discount_match"] = qc["qc_discount_match"]
 
     return review_results
 

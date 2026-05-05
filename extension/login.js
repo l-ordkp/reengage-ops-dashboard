@@ -64,8 +64,12 @@ chrome.storage.local.get(
       console.error("[ReEngage Login] Error during login:", e);
     }
 
-    if (success) {
-      console.log("[ReEngage Login] Cleaning up stored credentials");
+    // Don't clear credentials here — only clear when we confirm
+    // we're on the merchant portal (not still on auth page)
+    const currentHost = window.location.hostname;
+    const onMerchantPortal = currentHost.includes("merchants.ubereats.com") || currentHost.includes("merchants.doordash.com") || currentHost.includes("www.doordash.com");
+    if (success && onMerchantPortal) {
+      console.log("[ReEngage Login] On merchant portal — clearing stored credentials");
       chrome.storage.local.remove([
         "login_username",
         "login_password",
@@ -73,7 +77,7 @@ chrome.storage.local.get(
         "login_store_id",
       ]);
     } else {
-      console.log("[ReEngage Login] Login not successful — keeping credentials for retry");
+      console.log(`[ReEngage Login] Keeping credentials (success=${success}, onPortal=${onMerchantPortal}, host=${currentHost})`);
     }
   }
 );
@@ -118,19 +122,40 @@ async function loginDoorDash(username, password, storeId) {
   // Step 4: Handle OTP if needed
   const otpField = document.querySelector(LOGIN_SELECTORS.DOORDASH_OTP);
   if (otpField) {
-    console.log("[ReEngage Login] [DD] Step 4: OTP field found. Fetching OTP...");
-    try {
-      let otp = await fetchOtp(
-        `https://internal.loopapplication.xyz/get_last_otp?username=${encodeURIComponent(username)}`
-      );
-      otp = otp.replace(/"/g, "").trim();
-      console.log(`[ReEngage Login] [DD] OTP received: ${otp.length} chars`);
-      await typeIntoField(LOGIN_SELECTORS.DOORDASH_OTP, otp);
-      simulateClick(document.querySelector("#prism-modal-footer > button:nth-child(2)"));
-      await sleep(4000);
-      console.log("[ReEngage Login] [DD] OTP submitted");
-    } catch (e) {
-      console.error("[ReEngage Login] [DD] OTP fetch/fill failed:", e);
+    console.log("[ReEngage Login] [DD] Step 4: OTP field found. Waiting for fresh OTP...");
+    await sleep(5000);
+
+    let ddOtpSuccess = false;
+    for (let otpAttempt = 0; otpAttempt < 3 && !ddOtpSuccess; otpAttempt++) {
+      try {
+        let otp = await fetchOtp(
+          `https://internal.loopapplication.xyz/get_last_otp?username=${encodeURIComponent(username)}`
+        );
+        otp = otp.replace(/"/g, "").trim();
+        console.log(`[ReEngage Login] [DD] OTP attempt ${otpAttempt + 1}: "${otp}" (${otp.length} chars)`);
+
+        if (!otp || otp.length < 4) {
+          console.log("[ReEngage Login] [DD] OTP too short, retrying in 5s...");
+          await sleep(5000);
+          continue;
+        }
+
+        await typeIntoField(LOGIN_SELECTORS.DOORDASH_OTP, otp);
+        simulateClick(document.querySelector("#prism-modal-footer > button:nth-child(2)"));
+        await sleep(4000);
+        console.log("[ReEngage Login] [DD] OTP submitted");
+
+        // Check if still on OTP screen
+        if (document.querySelector(LOGIN_SELECTORS.DOORDASH_OTP)) {
+          console.log("[ReEngage Login] [DD] OTP might be wrong, retrying in 5s...");
+          await sleep(5000);
+        } else {
+          ddOtpSuccess = true;
+        }
+      } catch (e) {
+        console.error(`[ReEngage Login] [DD] OTP attempt ${otpAttempt + 1} failed:`, e);
+        await sleep(5000);
+      }
     }
   } else {
     console.log("[ReEngage Login] [DD] Step 4: No OTP field — login may have completed");
@@ -165,24 +190,55 @@ async function loginUberEats(username, password, storeId) {
 
   // Handle OTP if found
   if (otpFields && otpFields.length > 0) {
-    console.log(`[ReEngage Login] OTP fields found (${otpFields.length}). Fetching OTP...`);
-    try {
-      let otp = await fetchOtp(
-        `https://internal.loopapplication.xyz/get_last_uber_otp?username=${encodeURIComponent(username)}`
-      );
-      otp = otp.replace(/"/g, "").trim();
-      console.log(`[ReEngage Login] OTP received: ${otp.length} chars`);
-      for (const [index, char] of otp.split("").entries()) {
-        if (otpFields[index]) {
-          await typeIntoFieldElement(otpFields[index], char);
-          await sleep(500);
+    console.log(`[ReEngage Login] OTP fields found (${otpFields.length}). Waiting for fresh OTP...`);
+
+    // Wait a few seconds for the platform to send the new OTP
+    await sleep(5000);
+
+    // Retry OTP fetch up to 3 times (in case we get a stale one)
+    let otpSuccess = false;
+    for (let otpAttempt = 0; otpAttempt < 3 && !otpSuccess; otpAttempt++) {
+      try {
+        let otp = await fetchOtp(
+          `https://internal.loopapplication.xyz/get_last_uber_otp?username=${encodeURIComponent(username)}`
+        );
+        otp = otp.replace(/"/g, "").trim();
+        console.log(`[ReEngage Login] OTP attempt ${otpAttempt + 1}: received "${otp}" (${otp.length} chars)`);
+
+        if (!otp || otp.length < 4) {
+          console.log("[ReEngage Login] OTP too short, retrying in 5s...");
+          await sleep(5000);
+          continue;
         }
+
+        // Re-query OTP fields in case they changed
+        otpFields = document.querySelectorAll(LOGIN_SELECTORS.UBER_OTP);
+        for (const [index, char] of otp.split("").entries()) {
+          if (otpFields[index]) {
+            await typeIntoFieldElement(otpFields[index], char);
+            await sleep(500);
+          }
+        }
+        await sleep(2000);
+        simulateClick(document.querySelector(LOGIN_SELECTORS.UBER_NEXT_BUTTON));
+        console.log("[ReEngage Login] OTP submitted");
+        otpSuccess = true;
+
+        // Check if OTP was rejected (fields still visible after submit)
+        await sleep(3000);
+        const stillOnOtp = document.querySelectorAll(LOGIN_SELECTORS.UBER_OTP).length > 0;
+        if (stillOnOtp) {
+          console.log("[ReEngage Login] OTP might be wrong (still on OTP screen), retrying in 5s...");
+          otpSuccess = false;
+          await sleep(5000);
+        }
+      } catch (e) {
+        console.error(`[ReEngage Login] OTP attempt ${otpAttempt + 1} failed:`, e);
+        await sleep(5000);
       }
-      await sleep(2000);
-      simulateClick(document.querySelector(LOGIN_SELECTORS.UBER_NEXT_BUTTON));
-      console.log("[ReEngage Login] OTP submitted");
-    } catch (e) {
-      console.error("[ReEngage Login] OTP fetch/fill failed:", e);
+    }
+    if (!otpSuccess) {
+      console.error("[ReEngage Login] All OTP attempts failed");
     }
 
     // After OTP, might need password

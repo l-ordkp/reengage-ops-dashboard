@@ -228,8 +228,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log(`[ReEngage BG] loginUrl=${loginUrl}`);
 
     // Smart check: if same account AND platform cookies still exist, skip re-login
-    const cookieDomain = platform === "UBEREATS" ? ".ubereats.com" : ".doordash.com";
-    const cookieUrl = platform === "UBEREATS" ? "https://merchants.ubereats.com" : "https://www.doordash.com";
+    const cookieDomains = platform === "UBEREATS"
+      ? [".ubereats.com", ".uber.com", "merchants.ubereats.com"]
+      : [".doordash.com", "www.doordash.com"];
 
     chrome.storage.local.get(["login_last_username", "login_last_platform"], (prev) => {
       const sameAccount = prev.login_last_username === username && prev.login_last_platform === platform;
@@ -239,10 +240,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
-      // Same account — check if session cookie still exists
-      chrome.cookies.getAll({ domain: cookieDomain }, (cookies) => {
-        const hasSession = cookies && cookies.length > 5; // platform sets many cookies when logged in
-        console.log(`[ReEngage BG] Same account. Cookies for ${cookieDomain}: ${cookies?.length || 0}. hasSession=${hasSession}`);
+      // Same account — check if session cookies still exist across all platform domains
+      Promise.all(cookieDomains.map(d => new Promise(resolve => {
+        chrome.cookies.getAll({ domain: d }, (c) => resolve(c ? c.length : 0));
+      }))).then((counts) => {
+        const totalCookies = counts.reduce((a, b) => a + b, 0);
+        const hasSession = totalCookies > 10; // UberEats sets 20+ cookies when properly logged in
+        console.log(`[ReEngage BG] Same account. Cookies: ${counts.join("+")}=${totalCookies}. hasSession=${hasSession}`);
 
         if (hasSession) {
           console.log(`[ReEngage BG] Session alive — going directly to review.`);

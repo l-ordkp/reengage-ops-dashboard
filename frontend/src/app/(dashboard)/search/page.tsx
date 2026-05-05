@@ -192,6 +192,12 @@ export default function SearchPage() {
                 <InfoField label="Last Assigned To" value={(r as any).assigned_to || "Unassigned"} />
                 <InfoField label="Assignment Status" value={(r as any).assignment_status || null} />
                 <InfoField label="Assigned At" value={(r as any).assigned_at ? String((r as any).assigned_at).slice(0, 16) : null} />
+                {(r as any).qc_response_match !== undefined && (
+                  <InfoField label="Response Match" value={(r as any).qc_response_match ? "✅ Exact" : "⚠️ Mismatch"} />
+                )}
+                {(r as any).qc_discount_match !== undefined && (
+                  <InfoField label="Discount Match" value={(r as any).qc_discount_match ? "✅ Exact" : "⚠️ Mismatch"} />
+                )}
               </div>
 
               {/* Review text */}

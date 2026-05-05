@@ -15,7 +15,10 @@ import {
   FiMenu,
   FiX,
   FiLogOut,
+  FiRefreshCw,
 } from "react-icons/fi";
+import { useQueryClient } from "@tanstack/react-query";
+import api from "@/lib/api";
 import { useAuth } from "@/providers/AuthProvider";
 import { ROLE_LABELS } from "@/lib/constants";
 
@@ -44,6 +47,17 @@ export default function Sidebar() {
   const pathname = usePathname();
   const { user, isLead, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const queryClient = useQueryClient();
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    try {
+      await api.post("/api/system/clear-cache");
+      queryClient.invalidateQueries();
+    } catch {}
+    setRefreshing(false);
+  }
 
   function isActive(href: string) {
     return pathname === href || pathname.startsWith(href + "/");
@@ -107,6 +121,14 @@ export default function Sidebar() {
             <p className="text-sm font-medium text-gray-200 truncate">{user.name}</p>
             <p className="text-xs text-gray-500">{ROLE_LABELS[user.role] || user.role}</p>
           </div>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="flex items-center gap-2 text-sm text-gray-400 hover:text-[#FF4B4B] transition-colors cursor-pointer mb-2"
+          >
+            <FiRefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
+            {refreshing ? "Refreshing..." : "Refresh Data"}
+          </button>
           <button
             onClick={logout}
             className="flex items-center gap-2 text-sm text-gray-400 hover:text-red-400 transition-colors cursor-pointer"
