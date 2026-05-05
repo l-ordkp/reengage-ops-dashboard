@@ -16,12 +16,16 @@ def my_assignments(user: dict = Depends(get_current_user)):
     if my_asgn.empty:
         return {"assignments": [], "reviews": []}
 
+    # Match on both review_uid AND order_id since DoorDash review_uid != order_id
     assigned_uids = set(my_asgn["review_uid"].tolist())
+    assigned_oids = set(my_asgn["order_id"].tolist())
     df_all = load_reviews()
-    df_q = df_all[df_all["review_uid"].isin(assigned_uids)].copy()
+    df_q = df_all[df_all["review_uid"].isin(assigned_uids) | df_all["order_id"].isin(assigned_oids)].copy()
 
-    asgn_map = my_asgn.set_index("review_uid")["assignment_id"].to_dict()
-    df_q["assignment_id"] = df_q["review_uid"].map(asgn_map)
+    # Map assignment_id via both review_uid and order_id
+    asgn_map_uid = my_asgn.set_index("review_uid")["assignment_id"].to_dict()
+    asgn_map_oid = my_asgn.set_index("order_id")["assignment_id"].to_dict()
+    df_q["assignment_id"] = df_q["review_uid"].map(asgn_map_uid).fillna(df_q["order_id"].map(asgn_map_oid))
 
     platform_order = {"Doordash": 0, "UberEats": 1}
     df_q["_plat_order"] = df_q["platform"].map(platform_order).fillna(2)
