@@ -96,6 +96,10 @@ def search_reviews(
     chain_name: Optional[str] = None,
     user: dict = Depends(require_lead),
 ):
+    from backend.db import bq_read as _bq_read
+    from backend.config import TABLE_AUTOMATION_REVIEWS, TABLE_SLUG_AM_MAPPING, TABLE_REVIEW_RESPONSES
+
+    # First try the 14-day cached data
     df = load_reviews()
 
     if field and query:
@@ -104,6 +108,48 @@ def search_reviews(
         results = df[df[field].astype(str) == query.strip()]
         if results.empty:
             results = df[df[field].astype(str).str.contains(query.strip(), na=False, case=False)]
+
+        # If not found in 14-day window, search historical data (90 days)
+        if results.empty and field in ("order_id", "review_uid", "review_id", "customer_id"):
+            safe_q = query.strip().replace("'", "''")
+            id_col = "COALESCE(ar.review_id, ar.order_id)" if field == "review_uid" else f"ar.{field}"
+            results = _bq_read(f"""
+                SELECT
+                    COALESCE(ar.review_id, ar.order_id) AS review_uid,
+                    ar.order_id, ar.review_id,
+                    sm.chain AS chain_name, sm.b_name_id, sm.vb_name AS brand_name,
+                    ar.platform, ar.slug, ar.store_id,
+                    sm.username AS portal_username, sm.password AS portal_password,
+                    ar.customer_name, ar.user_id AS customer_id,
+                    CAST(ar.star_rating AS STRING) AS star_rating,
+                    ar.rating_type, ar.rating_value, ar.review_text,
+                    ar.items, ar.order_value, ar.is_replied,
+                    DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')) AS review_date,
+                    CASE
+                        WHEN ar.platform = 'Doordash' THEN
+                            DATE_DIFF(DATE_ADD(DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')), INTERVAL 7 DAY), CURRENT_DATE('America/Chicago'), DAY)
+                        WHEN ar.platform = 'UberEats' THEN
+                            DATE_DIFF(DATE_ADD(DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')), INTERVAL 14 DAY), CURRENT_DATE('America/Chicago'), DAY)
+                        ELSE 0
+                    END AS days_left,
+                    CASE WHEN ar.is_replied = TRUE THEN 'RESPONDED' ELSE 'EXPIRED' END AS status,
+                    'NORMAL' AS priority,
+                    rr.response_text, rr.response_type, rr.coupon_value,
+                    CASE
+                        WHEN ar.platform = 'UberEats' THEN
+                            CONCAT('https://merchants.ubereats.com/manager/home/', ar.store_id, '/feedback/reviews/', ar.order_id)
+                        WHEN ar.platform = 'Doordash' THEN
+                            CONCAT('https://www.doordash.com/merchant/feedback?store_id=', ar.store_id)
+                        ELSE ''
+                    END AS portal_link
+                FROM `{TABLE_AUTOMATION_REVIEWS}` ar
+                INNER JOIN `{TABLE_SLUG_AM_MAPPING}` sm ON ar.slug = sm.slug
+                LEFT JOIN `{TABLE_REVIEW_RESPONSES}` rr ON ar.order_id = rr.order_id
+                WHERE {id_col} = '{safe_q}'
+                  AND COALESCE(ar.review_timestamp, ar.order_timestamp)
+                      >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY))
+                LIMIT 10
+            """)
     elif customer_name:
         subset = df if not chain_name or chain_name == "All" else df[df["chain_name"] == chain_name]
         mask = subset["customer_name"].astype(str).str.lower().str.contains(
@@ -112,7 +158,29 @@ def search_reviews(
     else:
         return []
 
-    return _df_to_dicts(results.head(100))
+    # Enrich with assignment info
+    from backend.data_loaders import load_assignments
+    assignments = load_assignments()
+    review_results = _df_to_dicts(results.head(100))
+
+    if not assignments.empty:
+        # Get latest assignment per review_uid
+        latest = assignments.sort_values("assigned_at", ascending=False).drop_duplicates("review_uid", keep="first")
+        asgn_map = {}
+        for _, a in latest.iterrows():
+            asgn_map[a["review_uid"]] = {
+                "assigned_to": a["operator_email"],
+                "assignment_status": a["status"],
+                "assigned_at": str(a["assigned_at"]) if a["assigned_at"] else None,
+            }
+        for r in review_results:
+            asgn = asgn_map.get(r.get("review_uid"))
+            if asgn:
+                r["assigned_to"] = asgn["assigned_to"]
+                r["assignment_status"] = asgn["assignment_status"]
+                r["assigned_at"] = asgn["assigned_at"]
+
+    return review_results
 
 
 class GenerateBatchBody(BaseModel):

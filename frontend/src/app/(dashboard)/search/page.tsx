@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { format } from "date-fns";
 import { FiSearch, FiCopy, FiCheck } from "react-icons/fi";
 import PortalLoginLink from "@/components/shared/PortalLoginLink";
 import { useAuth } from "@/providers/AuthProvider";
@@ -181,13 +180,18 @@ export default function SearchPage() {
                 <InfoField label="Customer" value={r.customer_name} />
                 <InfoField label="Customer ID" value={r.customer_id} />
                 <InfoField label="Type" value={r.customer_type} />
-                <InfoField label="Date" value={r.review_date ? format(new Date(r.review_date), "MMM dd, yyyy") : null} />
+                <InfoField label="Date" value={r.review_date ? String(r.review_date) : null} />
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm mb-3">
                 <InfoField label="Order ID" value={r.order_id} mono copyable />
                 <InfoField label="Review ID" value={r.review_id} mono copyable />
                 <InfoField label="Store ID" value={r.store_id} mono />
-                <InfoField label="Order Value" value={r.order_value != null ? `$${Number(r.order_value).toFixed(2)}` : null} />
+                <InfoField label="Order Value" value={r.order_value != null && r.order_value !== 0 ? `$${Number(r.order_value).toFixed(2)}` : null} />
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm mb-3">
+                <InfoField label="Last Assigned To" value={(r as any).assigned_to || "Unassigned"} />
+                <InfoField label="Assignment Status" value={(r as any).assignment_status || null} />
+                <InfoField label="Assigned At" value={(r as any).assigned_at ? String((r as any).assigned_at).slice(0, 16) : null} />
               </div>
 
               {/* Review text */}
@@ -206,7 +210,7 @@ export default function SearchPage() {
                     <CopyTextButton text={r.response_text} />
                   </div>
                   <p className="text-sm text-green-300 bg-[#0E1117] rounded-lg p-3">{r.response_text}</p>
-                  {r.coupon_value != null && r.coupon_value > 0 && (
+                  {r.coupon_value != null && Number(r.coupon_value) > 0 && (
                     <p className="text-xs text-yellow-400 mt-1">Coupon: ${Number(r.coupon_value).toFixed(2)}</p>
                   )}
                 </div>
