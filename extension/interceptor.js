@@ -220,12 +220,26 @@
 
     // DoorDash: detect reply submission (respond to review endpoint)
     if (this._reengageMethod === "POST" && this._reengageUrl.indexOf("/consumer_feedback/send_response") !== -1) {
+      // Parse request body for QC
+      var ddReqBody = {};
+      try { ddReqBody = JSON.parse(bodyStr); } catch (e) {}
+      var ddContent = ddReqBody.messageContent || {};
+
       this.addEventListener("load", function () {
         if (self.status >= 200 && self.status < 300) {
-          console.log("[ReEngage Interceptor] DoorDash reply submitted!");
+          console.log("[ReEngage Interceptor] DoorDash reply submitted!", {
+            mx_response: ddContent.mx_response,
+            promo_value: ddContent.promo_value,
+            complaintId: ddReqBody.complaintId,
+          });
           window.postMessage({
             type: "REENGAGE_REPLY_SUBMITTED",
-            platform: "doordash"
+            platform: "doordash",
+            qc: {
+              replied_response: ddContent.mx_response || "",
+              replied_discount: String(ddContent.promo_value || 0),
+              order_id: ddReqBody.complaintId || "",
+            }
           }, "*");
         }
       });
