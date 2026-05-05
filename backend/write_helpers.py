@@ -49,10 +49,30 @@ def mark_assignment_completed(assignment_id: str, performed_by: str):
 
 
 def expire_stale_assignments():
+    """Mark assignments as expired when the review's actual response window has passed.
+    Joins with automation_reviews to compute real days_left instead of using the stale snapshot."""
+    from backend.config import TABLE_AUTOMATION_REVIEWS
     bq_exec(f"""
-    UPDATE `{TABLE_ASSIGNMENTS}`
+    UPDATE `{TABLE_ASSIGNMENTS}` a
     SET status = 'expired'
-    WHERE status = 'pending' AND days_left <= 0
+    WHERE a.status = 'pending'
+      AND (
+        -- Use stale days_left as fallback
+        a.days_left <= 0
+        OR
+        -- Check actual review date: DD=7 days, UE=14 days
+        EXISTS (
+          SELECT 1 FROM `{TABLE_AUTOMATION_REVIEWS}` ar
+          WHERE ar.order_id = a.order_id
+            AND CASE
+              WHEN a.platform = 'Doordash' THEN
+                DATE_DIFF(DATE_ADD(DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')), INTERVAL 7 DAY), CURRENT_DATE('America/Chicago'), DAY)
+              WHEN a.platform = 'UberEats' THEN
+                DATE_DIFF(DATE_ADD(DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')), INTERVAL 14 DAY), CURRENT_DATE('America/Chicago'), DAY)
+              ELSE 0
+            END <= 0
+        )
+      )
     """)
 
 

@@ -17,6 +17,7 @@ export default function OperatorsPage() {
   const { data: perfData, isLoading: perfLoading } = useOperatorPerformance();
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [dailyOperatorFilter, setDailyOperatorFilter] = useState("");
   const { data: dailyData } = useDailyBreakdown(dateFrom || undefined, dateTo || undefined);
   const [selectedChainOp, setSelectedChainOp] = useState("");
   const { data: chainData } = useChainBreakdown(selectedChainOp || undefined);
@@ -141,7 +142,7 @@ export default function OperatorsPage() {
       <div>
         <h2 className="text-lg font-semibold mb-3">Date-wise Completion</h2>
         <p className="text-sm text-gray-400 mb-3">Which operator missed the most reviews on which day.</p>
-        <div className="flex gap-4 mb-4">
+        <div className="flex gap-4 mb-4 flex-wrap">
           <div>
             <label className="text-xs text-gray-400 block mb-1">From</label>
             <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
@@ -152,8 +153,20 @@ export default function OperatorsPage() {
             <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
               className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm" />
           </div>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">Operator</label>
+            <select value={dailyOperatorFilter} onChange={(e) => setDailyOperatorFilter(e.target.value)}
+              className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm">
+              <option value="">All Operators</option>
+              {operatorEmails.map((e) => <option key={e} value={e}>{e}</option>)}
+            </select>
+          </div>
         </div>
-        {daily.length > 0 ? (
+        {daily.length > 0 ? (() => {
+          const filteredDaily = dailyOperatorFilter
+            ? daily.filter((d) => d.operator_email === dailyOperatorFilter)
+            : daily;
+          return filteredDaily.length > 0 ? (
           <div className="overflow-x-auto rounded-lg border border-gray-800">
             <table className="w-full text-sm">
               <thead className="bg-[#262730] text-gray-400 sticky top-0">
@@ -168,7 +181,7 @@ export default function OperatorsPage() {
                 </tr>
               </thead>
               <tbody>
-                {daily.map((d, i) => (
+                {filteredDaily.map((d, i) => (
                   <tr key={i} className="border-t border-gray-800 hover:bg-[#262730]/50">
                     <td className="px-4 py-3">{String(d.assign_date)}</td>
                     <td className="px-4 py-3">{d.name || d.operator_email}</td>
@@ -191,6 +204,8 @@ export default function OperatorsPage() {
             </table>
           </div>
         ) : (
+          <p className="text-gray-500 text-sm">No data for selected filters.</p>
+        ); })() : (
           <p className="text-gray-500 text-sm">No daily data available.</p>
         )}
       </div>
