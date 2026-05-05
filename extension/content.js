@@ -28,15 +28,39 @@
       console.log(`[ReEngage] Reply submitted on ${event.data.platform} — auto-marking ${currentDeliveryUuid}`);
       autoMarkedOrders.add(currentDeliveryUuid);
       const platformName = event.data.platform === "ubereats" ? "UberEats" : "Doordash";
+
+      // QC: compare what operator posted vs what AI generated
+      const qc = event.data.qc || {};
+      const aiResponse = currentReviewData.response_text || "";
+      const aiCoupon = currentReviewData.coupon_value ? String(currentReviewData.coupon_value) : "0";
+      const repliedResponse = qc.replied_response || "";
+      const repliedDiscount = qc.replied_discount || "NONE";
+
+      const exactMatchResponse = repliedResponse.trim() === aiResponse.trim();
+      const exactMatchDiscount = (repliedDiscount === "NONE" && (aiCoupon === "0" || aiCoupon === "0.0"))
+        || repliedDiscount === aiCoupon
+        || repliedDiscount === `$${aiCoupon}`;
+
+      console.log(`[ReEngage QC] Response match: ${exactMatchResponse}, Discount match: ${exactMatchDiscount}`);
+      console.log(`[ReEngage QC] Replied: "${repliedResponse.slice(0, 50)}..." | AI: "${aiResponse.slice(0, 50)}..."`);
+      console.log(`[ReEngage QC] Replied discount: ${repliedDiscount} | AI coupon: ${aiCoupon}`);
+
       chrome.runtime.sendMessage({
         type: "MARK_RESPONDED",
         orderId: currentDeliveryUuid,
         platform: platformName,
-        chainName: currentReviewData.slug || ""
+        chainName: currentReviewData.slug || "",
+        qc: {
+          replied_response: repliedResponse,
+          replied_discount: repliedDiscount,
+          exact_match_response: exactMatchResponse,
+          exact_match_discount: exactMatchDiscount,
+        }
       }, (result) => {
         if (result && result.success) {
-          console.log(`[ReEngage] Auto-marked ${currentDeliveryUuid} as responded`);
-          showToast("Response verified and logged!");
+          const matchIcon = exactMatchResponse ? "✅" : "⚠️";
+          console.log(`[ReEngage] Auto-marked ${currentDeliveryUuid} as responded ${matchIcon}`);
+          showToast(exactMatchResponse ? "Response verified and logged! ✅" : "Response logged — text mismatch detected ⚠️");
         } else {
           console.warn(`[ReEngage] Auto-mark failed:`, result?.error);
         }

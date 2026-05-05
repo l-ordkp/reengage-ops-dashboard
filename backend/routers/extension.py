@@ -77,7 +77,7 @@ def lookup(order_id: str, x_operator_email: str = Header(None)):
         "response_text": r.get("response_text"),
         "coupon_value": float(r["coupon_value"]) if r.get("coupon_value") else 0,
         "response_type": r.get("response_type"),
-        "response_sent": str(r["response_sent"]) if r.get("response_sent") else None,
+        "response_sent": str(r["response_sent"]) if r.get("response_sent") and str(r["response_sent"]) != "NaT" else None,
         "customer_name": r.get("customer_name"),
         "review_text": r.get("review_text"),
         "star_rating": str(r["star_rating"]) if r.get("star_rating") else None,
@@ -91,6 +91,10 @@ class MarkRespondedBody(BaseModel):
     order_id: str
     platform: str
     chain_name: str = ""
+    replied_response: str = ""
+    replied_discount: str = ""
+    exact_match_response: bool = True
+    exact_match_discount: bool = True
 
 
 @router.post("/mark-responded")
@@ -117,6 +121,16 @@ def mark_responded(body: MarkRespondedBody, x_operator_email: str = Header(None)
     platform_short = "extension_ue" if "uber" in body.platform.lower() else "extension_dd"
     log_id = str(uuid.uuid4())
 
+    # Build remarks with QC info
+    qc_info = platform_short
+    if body.replied_response:
+        match_r = "exact" if body.exact_match_response else "MISMATCH"
+        match_d = "exact" if body.exact_match_discount else "MISMATCH"
+        qc_info = f"{platform_short}|resp:{match_r}|disc:{match_d}"
+
+    safe_qc = qc_info.replace("'", "''")
+    safe_replied = body.replied_response[:500].replace("'", "''") if body.replied_response else ""
+
     bq_exec(f"""
         INSERT INTO `{PROJECT}.{TABLE_OPS_LOG}`
             (id, review_uid, platform, chain_name, action,
@@ -124,7 +138,7 @@ def mark_responded(body: MarkRespondedBody, x_operator_email: str = Header(None)
         VALUES
             ('{log_id}', '{safe_uid}', '{safe_platform}', '{safe_chain}',
              'mark_responded', '{safe_operator}', '{safe_operator}',
-             '{platform_short}', TIMESTAMP('{now}'))
+             '{safe_qc}', TIMESTAMP('{now}'))
     """)
 
     existing = bq_read_dicts(f"""
@@ -156,4 +170,12 @@ def mark_responded(body: MarkRespondedBody, x_operator_email: str = Header(None)
         WHERE order_id = '{safe_order_id}'
     """)
 
-    return {"success": True, "operator_email": operator_email, "review_uid": review_uid}
+    return {
+        "success": True,
+        "operator_email": operator_email,
+        "review_uid": review_uid,
+        "qc": {
+            "exact_match_response": body.exact_match_response,
+            "exact_match_discount": body.exact_match_discount,
+        } if body.replied_response else None,
+    }

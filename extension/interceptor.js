@@ -52,10 +52,12 @@
             }).catch(function () {});
           }
 
-          // UberEats: GraphQL EaterReviews
+          // UberEats: GraphQL
           if (url.indexOf("/manager/graphql") !== -1) {
             var bodyText = typeof init.body === "string" ? init.body : "";
-            if (bodyText.indexOf("EaterReview") !== -1) {
+
+            // EaterReviews list
+            if (bodyText.indexOf("EaterReview") !== -1 && bodyText.indexOf("SubmitReply") === -1) {
               var clone2 = resp.clone();
               clone2.json().then(function (json) {
                 var reviews = [];
@@ -79,6 +81,31 @@
                   responded: responded,
                   totalReviews: reviews.length
                 }, "*");
+              }).catch(function () {});
+            }
+
+            // SubmitReply mutation (fetch path)
+            if (bodyText.indexOf("SubmitReply") !== -1) {
+              var reqBody2 = {};
+              try { reqBody2 = JSON.parse(bodyText); } catch (e) {}
+              var vars2 = reqBody2.variables || {};
+              var clone3 = resp.clone();
+              clone3.json().then(function (json) {
+                if (json.data && json.data.submitEaterReviewReply) {
+                  var reply = json.data.submitEaterReviewReply;
+                  console.log("[ReEngage Interceptor] Fetch UberEats reply submitted!", vars2);
+                  window.postMessage({
+                    type: "REENGAGE_REPLY_SUBMITTED",
+                    platform: "ubereats",
+                    qc: {
+                      replied_response: vars2.comment || "",
+                      replied_discount: vars2.promotionValue || "NONE",
+                      order_id: vars2.workflowUUID || "",
+                      confirmed_response: reply.comment || "",
+                      confirmed_discount: reply.promotion ? (reply.promotion.formattedValue || reply.promotion.flatValue || "0") : "0",
+                    }
+                  }, "*");
+                }
               }).catch(function () {});
             }
           }
@@ -164,10 +191,27 @@
           // Case 2: SubmitReply mutation response — reply was just posted
           if (json.data && json.data.submitEaterReviewReply) {
             var reply = json.data.submitEaterReviewReply;
-            console.log("[ReEngage Interceptor] UberEats reply submitted!", reply);
+            // Parse the request body to get what operator actually submitted
+            var reqBody = {};
+            try { reqBody = JSON.parse(bodyStr); } catch (e) {}
+            var vars = reqBody.variables || {};
+
+            console.log("[ReEngage Interceptor] UberEats reply submitted!", {
+              comment: vars.comment,
+              promotionValue: vars.promotionValue,
+              workflowUUID: vars.workflowUUID,
+            });
+
             window.postMessage({
               type: "REENGAGE_REPLY_SUBMITTED",
-              platform: "ubereats"
+              platform: "ubereats",
+              qc: {
+                replied_response: vars.comment || "",
+                replied_discount: vars.promotionValue || "NONE",
+                order_id: vars.workflowUUID || "",
+                confirmed_response: reply.comment || "",
+                confirmed_discount: reply.promotion ? (reply.promotion.formattedValue || reply.promotion.flatValue || "0") : "0",
+              }
             }, "*");
           }
         } catch (e) {}

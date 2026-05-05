@@ -138,7 +138,7 @@ def lookup(
         "response_text": r.response_text,
         "coupon_value": float(r.coupon_value) if r.coupon_value else 0,
         "response_type": r.response_type,
-        "response_sent": str(r.response_sent) if r.response_sent else None,
+        "response_sent": str(r.response_sent) if r.response_sent and str(r.response_sent) != "NaT" else None,
         "customer_name": r.customer_name,
         "review_text": r.review_text,
         "star_rating": str(r.star_rating) if r.star_rating else None,
@@ -152,6 +152,10 @@ class MarkRespondedBody(BaseModel):
     order_id: str
     platform: str
     chain_name: str = ""
+    replied_response: str = ""
+    replied_discount: str = ""
+    exact_match_response: bool = True
+    exact_match_discount: bool = True
 
 
 @app.post("/api/extension/mark-responded")

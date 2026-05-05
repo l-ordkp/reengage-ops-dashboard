@@ -7,6 +7,7 @@ import {
   useDailyBreakdown,
   useChainBreakdown,
   useOperatorQueue,
+  useQCSummary,
 } from "@/hooks/useOperators";
 import { PRIORITY_ICON, STATUS_ICON } from "@/lib/constants";
 import PortalLoginLink from "@/components/shared/PortalLoginLink";
@@ -21,6 +22,7 @@ export default function OperatorsPage() {
   const { data: dailyData } = useDailyBreakdown(dateFrom || undefined, dateTo || undefined);
   const [selectedChainOp, setSelectedChainOp] = useState("");
   const { data: chainData } = useChainBreakdown(selectedChainOp || undefined);
+  const { data: qcData } = useQCSummary();
   const [selectedDrillOp, setSelectedDrillOp] = useState("");
   const { data: queueData } = useOperatorQueue(selectedDrillOp || undefined);
   const [expandedChains, setExpandedChains] = useState<Set<string>>(new Set());
@@ -137,6 +139,56 @@ export default function OperatorsPage() {
           </div>
         )}
       </div>
+
+      {/* QC Accuracy */}
+      {qcData && qcData.length > 0 && (
+        <div>
+          <h2 className="text-lg font-semibold mb-3">Response QC Accuracy</h2>
+          <p className="text-sm text-gray-400 mb-3">Did operators copy-paste the AI response and coupon correctly?</p>
+          <div className="overflow-x-auto rounded-lg border border-gray-800">
+            <table className="w-full text-sm">
+              <thead className="bg-[#262730] text-gray-400 sticky top-0">
+                <tr>
+                  <th className="text-left px-4 py-3">Operator</th>
+                  <th className="px-4 py-3 text-right">Total QC&apos;d</th>
+                  <th className="px-4 py-3 text-right">Response Exact</th>
+                  <th className="px-4 py-3 text-right">Response Accuracy</th>
+                  <th className="px-4 py-3 text-right">Discount Exact</th>
+                  <th className="px-4 py-3 text-right">Discount Accuracy</th>
+                </tr>
+              </thead>
+              <tbody>
+                {qcData.map((q: any) => (
+                  <tr key={q.operator_email} className="border-t border-gray-800 hover:bg-[#262730]/50">
+                    <td className="px-4 py-3 font-medium">{q.name || q.operator_email}</td>
+                    <td className="px-4 py-3 text-right">{q.total_qc}</td>
+                    <td className="px-4 py-3 text-right text-green-400">{q.resp_exact}/{q.total_qc}</td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <div className="w-16 h-2 bg-gray-700 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${q.resp_accuracy >= 90 ? "bg-green-500" : q.resp_accuracy >= 70 ? "bg-yellow-500" : "bg-red-500"}`}
+                            style={{ width: `${Math.min(q.resp_accuracy || 0, 100)}%` }} />
+                        </div>
+                        <span className="text-xs">{(q.resp_accuracy || 0).toFixed(0)}%</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right text-green-400">{q.disc_exact}/{q.total_qc}</td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <div className="w-16 h-2 bg-gray-700 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${q.disc_accuracy >= 90 ? "bg-green-500" : q.disc_accuracy >= 70 ? "bg-yellow-500" : "bg-red-500"}`}
+                            style={{ width: `${Math.min(q.disc_accuracy || 0, 100)}%` }} />
+                        </div>
+                        <span className="text-xs">{(q.disc_accuracy || 0).toFixed(0)}%</span>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Date-wise completion */}
       <div>

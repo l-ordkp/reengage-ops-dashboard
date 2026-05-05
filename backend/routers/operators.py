@@ -91,3 +91,43 @@ def operator_queue(email: str, user: dict = Depends(require_lead)):
         "reviews": _df_to_dicts(df_op),
         "combos": _df_to_dicts(combos),
     }
+
+
+@router.get("/qc-summary")
+def qc_summary(user: dict = Depends(require_lead)):
+    """QC accuracy metrics per operator from ops_log remarks."""
+    from backend.data_loaders import load_ops_log
+    ops = load_ops_log()
+    users_df = load_all_users()
+
+    if ops.empty:
+        return []
+
+    # Filter to mark_responded actions with QC data
+    qc_rows = ops[
+        (ops["action"] == "mark_responded") &
+        (ops["remarks"].str.contains("resp:", na=False))
+    ].copy()
+
+    if qc_rows.empty:
+        return []
+
+    qc_rows["resp_match"] = qc_rows["remarks"].str.contains("resp:exact", na=False)
+    qc_rows["disc_match"] = qc_rows["remarks"].str.contains("disc:exact", na=False)
+
+    summary = qc_rows.groupby("operator_email").agg(
+        total_qc=("remarks", "count"),
+        resp_exact=("resp_match", "sum"),
+        disc_exact=("disc_match", "sum"),
+    ).reset_index()
+
+    summary["resp_accuracy"] = (summary["resp_exact"] / summary["total_qc"] * 100).round(1)
+    summary["disc_accuracy"] = (summary["disc_exact"] / summary["total_qc"] * 100).round(1)
+
+    if not users_df.empty:
+        summary = summary.merge(
+            users_df[["email", "name"]],
+            left_on="operator_email", right_on="email", how="left",
+        ).drop(columns=["email"], errors="ignore")
+
+    return _df_to_dicts(summary)

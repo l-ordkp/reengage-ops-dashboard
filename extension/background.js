@@ -345,8 +345,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Mark responded on Cloud Run
   if (message.type === "MARK_RESPONDED") {
-    const { orderId, platform, chainName } = message;
+    const { orderId, platform, chainName, qc } = message;
     Promise.all([getApiBase(), getOperatorEmail()]).then(([apiBase, email]) => {
+      const body = {
+        order_id: orderId,
+        platform: platform,
+        chain_name: chainName || ""
+      };
+      // Include QC data if available
+      if (qc) {
+        body.replied_response = qc.replied_response || "";
+        body.replied_discount = qc.replied_discount || "";
+        body.exact_match_response = qc.exact_match_response || false;
+        body.exact_match_discount = qc.exact_match_discount || false;
+      }
+      console.log(`[ReEngage BG] MARK_RESPONDED with QC:`, qc ? `match_resp=${qc.exact_match_response}, match_disc=${qc.exact_match_discount}` : "no QC data");
       fetch(`${apiBase}/api/extension/mark-responded`, {
         method: "POST",
         headers: {
@@ -354,11 +367,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           "X-Operator-Email": email,
           "ngrok-skip-browser-warning": "true"
         },
-        body: JSON.stringify({
-          order_id: orderId,
-          platform: platform,
-          chain_name: chainName || ""
-        })
+        body: JSON.stringify(body)
       })
         .then(resp => resp.json())
         .then(data => sendResponse({ success: true, data }))

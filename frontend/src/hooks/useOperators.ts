@@ -44,6 +44,26 @@ interface OperatorQueueResponse {
   combos: { chain_name: string; platform: string; count: number; critical: number; min_days: number }[];
 }
 
+interface QCSummary {
+  operator_email: string;
+  name?: string;
+  total_qc: number;
+  resp_exact: number;
+  disc_exact: number;
+  resp_accuracy: number;
+  disc_accuracy: number;
+}
+
+export function useQCSummary() {
+  return useQuery<QCSummary[]>({
+    queryKey: ["qc-summary"],
+    queryFn: async () => {
+      const { data } = await api.get("/api/operators/qc-summary");
+      return data;
+    },
+  });
+}
+
 export function useOperatorQueue(email?: string) {
   return useQuery<OperatorQueueResponse>({
     queryKey: ["operator-queue", email],
