@@ -39,7 +39,7 @@ export default function OperatorsPage() {
   const totalCompleted = perf.reduce((s, p) => s + p.completed, 0);
   const totalExpired = perf.reduce((s, p) => s + p.expired, 0);
   const totalPending = perf.reduce((s, p) => s + p.pending, 0);
-  const teamRate = totalCompleted + totalExpired > 0 ? (totalCompleted / (totalCompleted + totalExpired) * 100) : 0;
+  const teamRate = totalAssigned > 0 ? (totalCompleted / totalAssigned * 100) : 0;
 
   const operatorEmails = perf.map((p) => p.operator_email).sort();
 
@@ -104,7 +104,8 @@ export default function OperatorsPage() {
                   <th className="px-4 py-3 text-right">Today</th>
                   <th className="px-4 py-3 text-right">Week</th>
                   <th className="px-4 py-3 text-right">Completed</th>
-                  <th className="px-4 py-3 text-right">Missed</th>
+                  <th className="px-4 py-3 text-right">Expired</th>
+                  <th className="px-4 py-3 text-right">Reassigned</th>
                   <th className="px-4 py-3 text-right">Pending</th>
                   <th className="px-4 py-3 text-right">Completion %</th>
                 </tr>
@@ -120,6 +121,7 @@ export default function OperatorsPage() {
                     <td className="px-4 py-3 text-right">{p.assigned_this_week}</td>
                     <td className="px-4 py-3 text-right text-green-400">{p.completed}</td>
                     <td className="px-4 py-3 text-right text-red-400">{p.expired}</td>
+                    <td className="px-4 py-3 text-right text-blue-400">{(p as any).reassigned || 0}</td>
                     <td className="px-4 py-3 text-right text-yellow-400">{p.pending}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-2">
@@ -227,7 +229,8 @@ export default function OperatorsPage() {
                   <th className="text-left px-4 py-3">Operator</th>
                   <th className="px-4 py-3 text-right">Assigned</th>
                   <th className="px-4 py-3 text-right">Completed</th>
-                  <th className="px-4 py-3 text-right">Missed</th>
+                  <th className="px-4 py-3 text-right">Expired</th>
+                  <th className="px-4 py-3 text-right">Reassigned</th>
                   <th className="px-4 py-3 text-right">Pending</th>
                   <th className="px-4 py-3 text-right">Completion %</th>
                 </tr>
@@ -240,6 +243,7 @@ export default function OperatorsPage() {
                     <td className="px-4 py-3 text-right">{d.assigned}</td>
                     <td className="px-4 py-3 text-right text-green-400">{d.completed}</td>
                     <td className="px-4 py-3 text-right text-red-400">{d.expired}</td>
+                    <td className="px-4 py-3 text-right text-blue-400">{(d as any).reassigned || 0}</td>
                     <td className="px-4 py-3 text-right text-yellow-400">{d.pending}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-2">
@@ -293,7 +297,7 @@ export default function OperatorsPage() {
                         <th className="text-left px-4 py-2">Platform</th>
                         <th className="px-4 py-2 text-right">Assigned</th>
                         <th className="px-4 py-2 text-right">Completed</th>
-                        <th className="px-4 py-2 text-right">Missed</th>
+                        <th className="px-4 py-2 text-right">Expired</th>
                         <th className="px-4 py-2 text-right">Pending</th>
                       </tr>
                     </thead>

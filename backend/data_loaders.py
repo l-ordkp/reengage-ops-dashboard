@@ -315,11 +315,10 @@ def load_operator_performance() -> pd.DataFrame:
             COUNTIF(status = 'completed') AS completed,
             COUNTIF(status = 'expired') AS expired,
             COUNTIF(status = 'pending') AS pending,
-            SAFE_DIVIDE(COUNTIF(status = 'completed'),
-                COUNTIF(status IN ('completed', 'expired'))) * 100 AS completion_rate
+            COUNTIF(status = 'reassigned') AS reassigned,
+            SAFE_DIVIDE(COUNTIF(status = 'completed'), COUNT(*)) * 100 AS completion_rate
         FROM `{TABLE_ASSIGNMENTS}`
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
-          AND status != 'reassigned'
         GROUP BY operator_email
     """)
 
@@ -334,11 +333,10 @@ def load_operator_daily_breakdown() -> pd.DataFrame:
             COUNTIF(status = 'completed') AS completed,
             COUNTIF(status = 'expired') AS expired,
             COUNTIF(status = 'pending') AS pending,
-            SAFE_DIVIDE(COUNTIF(status = 'completed'),
-                COUNTIF(status IN ('completed', 'expired'))) * 100 AS completion_pct
+            COUNTIF(status = 'reassigned') AS reassigned,
+            SAFE_DIVIDE(COUNTIF(status = 'completed'), COUNT(*)) * 100 AS completion_pct
         FROM `{TABLE_ASSIGNMENTS}`
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
-          AND status != 'reassigned'
         GROUP BY operator_email, assign_date
         ORDER BY assign_date DESC, operator_email
     """)
@@ -352,10 +350,10 @@ def load_operator_chain_breakdown() -> pd.DataFrame:
             COUNT(*) AS assigned,
             COUNTIF(status = 'completed') AS completed,
             COUNTIF(status = 'expired') AS expired,
-            COUNTIF(status = 'pending') AS pending
+            COUNTIF(status = 'pending') AS pending,
+            COUNTIF(status = 'reassigned') AS reassigned
         FROM `{TABLE_ASSIGNMENTS}`
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
-          AND status != 'reassigned'
         GROUP BY operator_email, chain_name, platform
         ORDER BY operator_email, assigned DESC
     """)

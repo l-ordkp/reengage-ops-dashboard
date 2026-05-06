@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { format } from "date-fns";
-import { FiCheckCircle, FiZap } from "react-icons/fi";
+import { FiZap } from "react-icons/fi";
 import PortalLoginLink from "@/components/shared/PortalLoginLink";
-import { useMyQueue, useMarkCompleted, useGenerateResponses } from "@/hooks/useMyQueue";
+import { useMyQueue, useGenerateResponses } from "@/hooks/useMyQueue";
 import { useReviewFilters, useReviewStats } from "@/hooks/useReviews";
 import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON } from "@/lib/constants";
 import type { Review } from "@/lib/types";
@@ -20,7 +20,6 @@ export default function QueuePage() {
 
   const { data, isLoading } = useMyQueue();
   const { data: filterOpts } = useReviewFilters();
-  const markCompleted = useMarkCompleted();
   const generateResponses = useGenerateResponses();
 
   let reviews: Review[] = (data?.reviews || []).filter((r) => r.status !== "EXPIRED");
@@ -41,11 +40,6 @@ export default function QueuePage() {
   if (filters.has_response === "true") reviews = reviews.filter((r) => r.response_text);
   if (filters.has_response === "false") reviews = reviews.filter((r) => !r.response_text);
 
-  function handleMarkCompleted(r: Review) {
-    if (r.assignment_id) {
-      markCompleted.mutate({ assignmentId: r.assignment_id });
-    }
-  }
 
   return (
     <div className="space-y-6">
@@ -190,16 +184,6 @@ export default function QueuePage() {
                     <PortalLoginLink review={r} />
                   </td>
                   <td className="px-4 py-3">
-                    {r.status === "PENDING" && (
-                      <button
-                        onClick={() => handleMarkCompleted(r)}
-                        disabled={markCompleted.isPending}
-                        className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-md transition-colors disabled:opacity-50 cursor-pointer"
-                      >
-                        <FiCheckCircle size={13} />
-                        Mark Responded
-                      </button>
-                    )}
                   </td>
                 </tr>
               ))
