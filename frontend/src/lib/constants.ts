@@ -24,7 +24,6 @@ export const STATUS_ICON: Record<string, string> = {
 
 export const ROLE_LABELS: Record<string, string> = {
   lead: "Lead",
-  operator: "Operator",
+  tenured_operator: "Tenured Operator",
   new_operator: "New Operator",
-  viewer: "Viewer",
 };
