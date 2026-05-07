@@ -26,7 +26,6 @@ export default function UsersPage() {
   const [editRole, setEditRole] = useState("");
   const [editReduction, setEditReduction] = useState(0);
 
-  const [fullReassign, setFullReassign] = useState(false);
   const [assignResult, setAssignResult] = useState<any>(null);
 
   if (!isLead) return <div className="text-gray-400 p-8">Lead access required.</div>;
@@ -48,7 +47,7 @@ export default function UsersPage() {
 
   async function handleRunAssignment() {
     setAssignResult(null);
-    const result = await runAssignment.mutateAsync(fullReassign);
+    const result = await runAssignment.mutateAsync(true);
     setAssignResult(result);
   }
 
