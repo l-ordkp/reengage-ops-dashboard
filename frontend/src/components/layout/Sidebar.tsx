@@ -34,12 +34,12 @@ const navItems: NavItem[] = [
   { href: "/reviews", label: "All Reviews", icon: <FiList size={18} /> },
   { href: "/chain-health", label: "Chain Health", icon: <FiActivity size={18} /> },
   { href: "/configs", label: "Response Config", icon: <FiSettings size={18} /> },
-  { href: "/ops-log", label: "Ops Log", icon: <FiClipboard size={18} /> },
 ];
 
 const leadItems: NavItem[] = [
   { href: "/search", label: "Search Review", icon: <FiSearch size={18} />, leadOnly: true },
   { href: "/operators", label: "Operators", icon: <FiUsers size={18} />, leadOnly: true },
+  { href: "/ops-log", label: "Ops Log", icon: <FiClipboard size={18} />, leadOnly: true },
   { href: "/users", label: "Manage Users", icon: <FiUserCheck size={18} />, leadOnly: true },
 ];
 
