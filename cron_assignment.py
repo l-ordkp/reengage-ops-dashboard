@@ -8,15 +8,7 @@ Can be run as:
 import json
 import sys
 
-# Need to set up streamlit secrets for BQ access when running standalone
-import os
-if not os.environ.get("STREAMLIT_SERVER_PORT"):
-    # Running outside Streamlit — set up minimal config
-    os.environ.setdefault("STREAMLIT_SERVER_HEADLESS", "true")
-
-import streamlit as st
-
-from assignment import run_assignment
+from backend.assignment import run_assignment
 
 
 def main():

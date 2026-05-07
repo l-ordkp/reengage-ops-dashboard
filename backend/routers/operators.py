@@ -77,8 +77,9 @@ def operator_queue(email: str, user: dict = Depends(require_lead)):
         return {"reviews": [], "combos": []}
 
     uids = set(pending["review_uid"].tolist())
+    oids = set(pending["order_id"].tolist())
     df_all = load_reviews()
-    df_op = df_all[df_all["review_uid"].isin(uids)].copy()
+    df_op = df_all[df_all["review_uid"].isin(uids) | df_all["order_id"].isin(oids)].copy()
     df_op = df_op.sort_values(["chain_name", "platform", "days_left"])
 
     combos = df_op.groupby(["chain_name", "platform"]).agg(
