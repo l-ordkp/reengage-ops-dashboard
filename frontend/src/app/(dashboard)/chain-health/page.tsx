@@ -76,7 +76,7 @@ export default function ChainHealthPage() {
 /* ── Sub-components ─────────────────────────────────────────────────────── */
 
 function ProgressBar({ value, color }: { value: number; color: string }) {
-  const pct = Math.min(100, Math.max(0, (value ?? 0) * 100));
+  const pct = Math.min(100, Math.max(0, value ?? 0));
   return (
     <div className="flex items-center gap-2">
       <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
