@@ -6,12 +6,9 @@ import {
   useOperatorPerformance,
   useDailyBreakdown,
   useChainBreakdown,
-  useOperatorQueue,
   useQCSummary,
 } from "@/hooks/useOperators";
-import { PRIORITY_ICON, STATUS_ICON } from "@/lib/constants";
-import PortalLoginLink from "@/components/shared/PortalLoginLink";
-import type { OperatorPerformance, DailyBreakdown, ChainBreakdown, Review } from "@/lib/types";
+import type { OperatorPerformance, DailyBreakdown, ChainBreakdown } from "@/lib/types";
 
 export default function OperatorsPage() {
   const { isLead } = useAuth();
@@ -23,8 +20,6 @@ export default function OperatorsPage() {
   const [selectedChainOp, setSelectedChainOp] = useState("");
   const { data: chainData } = useChainBreakdown(selectedChainOp || undefined);
   const { data: qcData } = useQCSummary();
-  const [selectedDrillOp, setSelectedDrillOp] = useState("");
-  const { data: queueData } = useOperatorQueue(selectedDrillOp || undefined);
   const [expandedChains, setExpandedChains] = useState<Set<string>>(new Set());
 
   if (!isLead) return <div className="text-gray-400 p-8">Lead access required.</div>;
@@ -32,8 +27,6 @@ export default function OperatorsPage() {
   const perf: OperatorPerformance[] = perfData || [];
   const daily: DailyBreakdown[] = dailyData || [];
   const chains: ChainBreakdown[] = chainData || [];
-  const queueReviews: Review[] = queueData?.reviews || [];
-  const queueCombos = queueData?.combos || [];
 
   const totalAssigned = perf.reduce((s, p) => s + p.total_assigned, 0);
   const totalCompleted = perf.reduce((s, p) => s + p.completed, 0);
@@ -58,13 +51,6 @@ export default function OperatorsPage() {
     chainGroups[c.chain_name].push(c);
   });
 
-  // Group queue reviews by chain+platform
-  const reviewGroups: Record<string, Review[]> = {};
-  queueReviews.forEach((r) => {
-    const key = `${r.chain_name}/${r.platform}`;
-    if (!reviewGroups[key]) reviewGroups[key] = [];
-    reviewGroups[key].push(r);
-  });
 
   return (
     <div className="space-y-8">
@@ -320,74 +306,6 @@ export default function OperatorsPage() {
         })}
       </div>
 
-      {/* Drill into queue */}
-      <div>
-        <h2 className="text-lg font-semibold mb-3">Drill into Operator Queue</h2>
-        <p className="text-sm text-gray-400 mb-3">View pending reviews grouped by chain and platform.</p>
-        <select value={selectedDrillOp} onChange={(e) => setSelectedDrillOp(e.target.value)}
-          className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm mb-4">
-          <option value="">Select operator</option>
-          {operatorEmails.map((e) => <option key={e} value={e}>{e}</option>)}
-        </select>
-        {selectedDrillOp && queueCombos.length > 0 && (
-          <div className="grid grid-cols-4 gap-3 mb-4">
-            {queueCombos.map((c: any, i: number) => (
-              <div key={i} className="bg-[#262730] rounded-lg p-3">
-                <p className="text-xs text-gray-400">{c.chain_name} / {c.platform}</p>
-                <p className="text-lg font-bold">{c.count} reviews</p>
-                <p className={`text-xs ${c.min_days <= 2 ? "text-red-400" : "text-gray-400"}`}>{c.min_days}d left{c.critical > 0 ? ` (${c.critical} critical)` : ""}</p>
-              </div>
-            ))}
-          </div>
-        )}
-        {Object.entries(reviewGroups).map(([groupKey, reviews]) => {
-          const crits = reviews.filter((r) => r.priority === "CRITICAL").length;
-          const minDays = Math.min(...reviews.map((r) => r.days_left));
-          const key = `drill-${groupKey}`;
-          const open = expandedChains.has(key) || crits > 0;
-          return (
-            <div key={groupKey} className="mb-2">
-              <button onClick={() => toggleChain(key)}
-                className="w-full flex items-center justify-between bg-[#262730] rounded-lg px-4 py-3 text-sm hover:bg-[#2f303a] cursor-pointer">
-                <span className="font-medium">{groupKey} — {reviews.length} reviews, {minDays}d left{crits > 0 ? ` (${crits} critical)` : ""}</span>
-                <span className="text-gray-400">{open ? "▼" : "▶"}</span>
-              </button>
-              {open && (
-                <div className="ml-4 mt-1 overflow-x-auto rounded-lg border border-gray-800">
-                  <table className="w-full text-sm">
-                    <thead className="bg-[#262730] text-gray-400">
-                      <tr>
-                        <th className="text-left px-3 py-2">Priority</th>
-                        <th className="text-left px-3 py-2">Days</th>
-                        <th className="text-left px-3 py-2">Customer</th>
-                        <th className="text-left px-3 py-2">Rating</th>
-                        <th className="text-left px-3 py-2">Review</th>
-                        <th className="text-left px-3 py-2">AI Response</th>
-                        <th className="text-left px-3 py-2">Date</th>
-                        <th className="px-3 py-2">Portal</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {reviews.map((r) => (
-                        <tr key={r.review_uid} className="border-t border-gray-800">
-                          <td className="px-3 py-2">{PRIORITY_ICON[r.priority]} {r.priority}</td>
-                          <td className="px-3 py-2">{r.days_left}</td>
-                          <td className="px-3 py-2">{r.customer_name || "—"}</td>
-                          <td className="px-3 py-2">{r.rating_display}</td>
-                          <td className="px-3 py-2 max-w-48 truncate">{r.review_text}</td>
-                          <td className="px-3 py-2 max-w-48 truncate">{r.response_text || "—"}</td>
-                          <td className="px-3 py-2 text-gray-400">{r.review_date}</td>
-                          <td className="px-3 py-2"><PortalLoginLink review={r} /></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }

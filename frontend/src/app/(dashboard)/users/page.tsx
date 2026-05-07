@@ -189,17 +189,10 @@ export default function UsersPage() {
       <div className="bg-[#262730] rounded-lg p-5">
         <h3 className="font-semibold mb-2">Run Assignment Engine</h3>
         <p className="text-sm text-gray-400 mb-4">Normally runs at 8 AM daily. Use this to trigger manually.</p>
-        <div className="flex items-center gap-4">
-          <label className="flex items-center gap-2 text-sm cursor-pointer">
-            <input type="checkbox" checked={fullReassign} onChange={(e) => setFullReassign(e.target.checked)}
-              className="rounded" />
-            Full reassignment (redistribute ALL pending reviews equally)
-          </label>
-          <button onClick={handleRunAssignment} disabled={runAssignment.isPending}
-            className="bg-[#FF4B4B] hover:bg-[#E04343] text-white rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50 cursor-pointer">
-            {runAssignment.isPending ? "Running..." : "Run Assignment Now"}
-          </button>
-        </div>
+        <button onClick={handleRunAssignment} disabled={runAssignment.isPending}
+          className="bg-[#FF4B4B] hover:bg-[#E04343] text-white rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50 cursor-pointer">
+          {runAssignment.isPending ? "Running..." : "Run Assignment Now"}
+        </button>
         {assignResult && (
           <div className="mt-4 bg-[#0E1117] rounded-lg p-3 text-sm">
             {assignResult.error ? (
