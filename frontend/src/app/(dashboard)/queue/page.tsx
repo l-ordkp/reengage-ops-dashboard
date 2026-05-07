@@ -5,7 +5,7 @@ import { format } from "date-fns";
 import { FiZap } from "react-icons/fi";
 import PortalLoginLink from "@/components/shared/PortalLoginLink";
 import { useMyQueue, useGenerateResponses } from "@/hooks/useMyQueue";
-import { useReviewFilters, useReviewStats } from "@/hooks/useReviews";
+import { useReviewStats } from "@/hooks/useReviews";
 import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON } from "@/lib/constants";
 import type { Review } from "@/lib/types";
 
@@ -19,10 +19,13 @@ export default function QueuePage() {
   });
 
   const { data, isLoading } = useMyQueue();
-  const { data: filterOpts } = useReviewFilters();
   const generateResponses = useGenerateResponses();
 
   let reviews: Review[] = (data?.reviews || []).filter((r) => r.status !== "EXPIRED");
+
+  // Derive filter options from operator's own assigned reviews
+  const myChains = [...new Set(reviews.map((r) => r.chain_name))].sort();
+  const myPlatforms = [...new Set(reviews.map((r) => r.platform))].sort();
 
   const pendingCount = reviews.filter((r) => r.status === "PENDING").length;
   const criticalCount = reviews.filter((r) => r.priority === "CRITICAL").length;
@@ -62,13 +65,13 @@ export default function QueuePage() {
         <FilterSelect
           label="Chain"
           value={filters.chain_name}
-          options={filterOpts?.chains || []}
+          options={myChains}
           onChange={(v) => handleFilterChange("chain_name", v)}
         />
         <FilterSelect
           label="Platform"
           value={filters.platform}
-          options={filterOpts?.platforms || []}
+          options={myPlatforms}
           onChange={(v) => handleFilterChange("platform", v)}
         />
         <FilterSelect
