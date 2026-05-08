@@ -23,6 +23,7 @@ export const STATUS_ICON: Record<string, string> = {
 };
 
 export const ROLE_LABELS: Record<string, string> = {
+  manager: "Manager",
   lead: "Lead",
   tenured_operator: "Tenured Operator",
   new_operator: "New Operator",

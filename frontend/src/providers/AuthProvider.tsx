@@ -9,6 +9,7 @@ interface AuthContextType {
   user: AuthUser | null;
   loading: boolean;
   isLead: boolean;
+  isManager: boolean;
   logout: () => Promise<void>;
 }
 
@@ -16,6 +17,7 @@ const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
   isLead: false,
+  isManager: false,
   logout: async () => {},
 });
 
@@ -46,10 +48,11 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
     }
   }, [router]);
 
-  const isLead = user?.role === "lead";
+  const isManager = user?.role === "manager";
+  const isLead = user?.role === "lead" || isManager;
 
   return (
-    <AuthContext.Provider value={{ user, loading, isLead, logout }}>
+    <AuthContext.Provider value={{ user, loading, isLead, isManager, logout }}>
       {children}
     </AuthContext.Provider>
   );

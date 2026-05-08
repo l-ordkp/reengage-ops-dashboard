@@ -23,7 +23,7 @@ def _load_operators() -> pd.DataFrame:
     return bq_read(f"""
         SELECT email, name, role, reduction_pct
         FROM `{TABLE_USERS}`
-        WHERE approved = TRUE AND role != '{ROLE_LEAD}'
+        WHERE approved = TRUE AND role NOT IN ('{ROLE_LEAD}', 'manager')
         ORDER BY email
     """)
 

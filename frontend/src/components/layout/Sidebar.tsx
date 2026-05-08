@@ -29,23 +29,29 @@ interface NavItem {
   leadOnly?: boolean;
 }
 
-const navItems: NavItem[] = [
+// Operator sees: My Queue only
+const operatorItems: NavItem[] = [
   { href: "/queue", label: "My Queue", icon: <FiInbox size={18} /> },
+];
+
+// Lead sees: operator items + these
+const leadItems: NavItem[] = [
   { href: "/reviews", label: "All Reviews", icon: <FiList size={18} /> },
   { href: "/chain-health", label: "Chain Health", icon: <FiActivity size={18} /> },
   { href: "/configs", label: "Response Config", icon: <FiSettings size={18} /> },
+  { href: "/search", label: "Search Review", icon: <FiSearch size={18} /> },
+  { href: "/operators", label: "Operators", icon: <FiUsers size={18} /> },
 ];
 
-const leadItems: NavItem[] = [
-  { href: "/search", label: "Search Review", icon: <FiSearch size={18} />, leadOnly: true },
-  { href: "/operators", label: "Operators", icon: <FiUsers size={18} />, leadOnly: true },
-  { href: "/ops-log", label: "Ops Log", icon: <FiClipboard size={18} />, leadOnly: true },
-  { href: "/users", label: "Manage Users", icon: <FiUserCheck size={18} />, leadOnly: true },
+// Manager sees: lead items + these
+const managerItems: NavItem[] = [
+  { href: "/ops-log", label: "Ops Log", icon: <FiClipboard size={18} /> },
+  { href: "/users", label: "Manage Users", icon: <FiUserCheck size={18} /> },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
-  const { user, isLead, logout } = useAuth();
+  const { user, isLead, isManager, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const queryClient = useQueryClient();
@@ -72,43 +78,32 @@ export default function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-        {navItems.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            onClick={() => setMobileOpen(false)}
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              isActive(item.href)
-                ? "bg-[#FF4B4B]/20 text-[#FF4B4B]"
-                : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
-            }`}
-          >
-            {item.icon}
-            {item.label}
-          </Link>
+        {operatorItems.map((item) => (
+          <NavLink key={item.href} item={item} isActive={isActive(item.href)} onClick={() => setMobileOpen(false)} />
         ))}
 
         {isLead && (
           <>
             <div className="pt-4 pb-2 px-3">
               <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                Lead Only
+                Lead
               </div>
             </div>
             {leadItems.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setMobileOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                  isActive(item.href)
-                    ? "bg-[#FF4B4B]/20 text-[#FF4B4B]"
-                    : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
-                }`}
-              >
-                {item.icon}
-                {item.label}
-              </Link>
+              <NavLink key={item.href} item={item} isActive={isActive(item.href)} onClick={() => setMobileOpen(false)} />
+            ))}
+          </>
+        )}
+
+        {isManager && (
+          <>
+            <div className="pt-4 pb-2 px-3">
+              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                Manager
+              </div>
+            </div>
+            {managerItems.map((item) => (
+              <NavLink key={item.href} item={item} isActive={isActive(item.href)} onClick={() => setMobileOpen(false)} />
             ))}
           </>
         )}
@@ -181,5 +176,22 @@ export default function Sidebar() {
         {sidebarContent}
       </aside>
     </>
+  );
+}
+
+function NavLink({ item, isActive, onClick }: { item: NavItem; isActive: boolean; onClick: () => void }) {
+  return (
+    <Link
+      href={item.href}
+      onClick={onClick}
+      className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+        isActive
+          ? "bg-[#FF4B4B]/20 text-[#FF4B4B]"
+          : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+      }`}
+    >
+      {item.icon}
+      {item.label}
+    </Link>
   );
 }

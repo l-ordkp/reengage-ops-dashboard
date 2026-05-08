@@ -6,7 +6,7 @@ import { useUsers, useAddUser, useUpdateRole, useToggleApproval, useDeleteUser, 
 import { ROLE_LABELS } from "@/lib/constants";
 import type { User } from "@/lib/types";
 
-const ALL_ROLES = ["lead", "tenured_operator", "new_operator"];
+const ALL_ROLES = ["manager", "lead", "tenured_operator", "new_operator"];
 
 export default function UsersPage() {
   const { isLead, user: currentUser } = useAuth();

@@ -29,7 +29,8 @@ RATING_OPTIONS_DD = ["RATING_VALUE_THUMBS_DOWN", "RATING_VALUE_THUMBS_UP", "RATI
 RATING_OPTIONS_UE = ["1", "2", "3", "4", "5"]
 
 # ── User roles ───────────────────────────────────────────────────────────────
+ROLE_MANAGER = "manager"
 ROLE_LEAD    = "lead"
 ROLE_TENURED = "tenured_operator"
 ROLE_NEW     = "new_operator"
-ALL_ROLES    = [ROLE_LEAD, ROLE_TENURED, ROLE_NEW]
+ALL_ROLES    = [ROLE_MANAGER, ROLE_LEAD, ROLE_TENURED, ROLE_NEW]

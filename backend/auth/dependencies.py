@@ -27,6 +27,6 @@ def get_current_user(request: Request) -> dict:
 
 
 def require_lead(user: dict = Depends(get_current_user)) -> dict:
-    if user["role"] != "lead":
+    if user["role"] not in ("lead", "manager"):
         raise HTTPException(status_code=403, detail="Lead access required")
     return user

@@ -90,4 +90,4 @@ def remove_user(email: str):
 
 
 def is_lead(role: str) -> bool:
-    return role == ROLE_LEAD
+    return role in (ROLE_LEAD, "manager")

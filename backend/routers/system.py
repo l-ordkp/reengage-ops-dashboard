@@ -39,7 +39,7 @@ def trigger_assignment(
             raise HTTPException(status_code=401, detail="Not authenticated")
         try:
             payload = jwt.decode(token, CRON_SECRET, algorithms=["HS256"])
-            if payload.get("role") != "lead":
+            if payload.get("role") not in ("lead", "manager"):
                 raise HTTPException(status_code=403, detail="Lead access required")
         except jwt.InvalidTokenError:
             raise HTTPException(status_code=401, detail="Invalid token")
