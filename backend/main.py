@@ -37,6 +37,9 @@ class SafeJSONResponse(JSONResponse):
         if isinstance(obj, np.bool_):
             return bool(obj)
         if isinstance(obj, (pd.Timestamp, datetime)):
+            # NaT is a Timestamp — handle it as None
+            if pd.isna(obj):
+                return None
             return obj.isoformat()
         if isinstance(obj, date):
             return obj.isoformat()

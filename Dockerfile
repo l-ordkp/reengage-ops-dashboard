@@ -24,10 +24,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy backend
 COPY backend/ ./backend/
 
-# Copy legacy files still needed (extension_api, cron, etc.)
-COPY config.py assignment.py auth.py data_loaders.py db.py pg_db.py \
-     write_helpers.py response_generator.py secret_manager.py models.py \
-     extension_api.py cron_assignment.py ./
+# Copy cron script (used by Cloud Scheduler / Cloud Run Job)
+COPY cron_assignment.py ./
 
 # Copy Next.js standalone build
 COPY --from=frontend-builder /app/frontend/.next/standalone ./frontend/

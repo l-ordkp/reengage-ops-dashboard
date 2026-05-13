@@ -111,6 +111,10 @@ export interface ChainHealth {
   locations: number;
   response_rate: number;
   ai_coverage: number;
+  loop_replied?: number;
+  coupons_issued?: number;
+  total_coupon_value?: number;
+  first_loop_replied?: string | null;
 }
 
 // ── Response Config ─────────────────────────────────────────────────────────

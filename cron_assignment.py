@@ -8,7 +8,7 @@ Can be run as:
 import json
 import sys
 
-from backend.assignment import run_assignment
+from backend.managers.assignment_manager import run_assignment
 
 
 def main():
