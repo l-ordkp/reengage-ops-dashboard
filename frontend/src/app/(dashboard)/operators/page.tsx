@@ -19,7 +19,9 @@ export default function OperatorsPage() {
   const { data: dailyData } = useDailyBreakdown(dateFrom || undefined, dateTo || undefined);
   const [selectedChainOp, setSelectedChainOp] = useState("");
   const { data: chainData } = useChainBreakdown(selectedChainOp || undefined);
-  const { data: qcData } = useQCSummary();
+  const [qcDateFrom, setQcDateFrom] = useState("");
+  const [qcDateTo, setQcDateTo] = useState("");
+  const { data: qcData } = useQCSummary(qcDateFrom || undefined, qcDateTo || undefined);
   const [expandedChains, setExpandedChains] = useState<Set<string>>(new Set());
 
   if (!isLead) return <div className="text-gray-400 p-8">Lead access required.</div>;
@@ -129,10 +131,28 @@ export default function OperatorsPage() {
       </div>
 
       {/* QC Accuracy */}
-      {qcData && qcData.length > 0 && (
-        <div>
-          <h2 className="text-lg font-semibold mb-3">Response QC Accuracy</h2>
-          <p className="text-sm text-gray-400 mb-3">Did operators copy-paste the AI response and coupon correctly?</p>
+      <div>
+        <h2 className="text-lg font-semibold mb-3">Response QC Accuracy</h2>
+        <p className="text-sm text-gray-400 mb-3">Did operators copy-paste the AI response and coupon correctly?</p>
+        <div className="flex gap-4 mb-4 flex-wrap items-end">
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">From</label>
+            <input type="date" value={qcDateFrom} onChange={(e) => setQcDateFrom(e.target.value)}
+              className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">To</label>
+            <input type="date" value={qcDateTo} onChange={(e) => setQcDateTo(e.target.value)}
+              className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          {(qcDateFrom || qcDateTo) && (
+            <button onClick={() => { setQcDateFrom(""); setQcDateTo(""); }}
+              className="px-3 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs text-gray-300 cursor-pointer">
+              Clear
+            </button>
+          )}
+        </div>
+        {qcData && qcData.length > 0 ? (
           <div className="overflow-x-auto rounded-lg border border-gray-800">
             <table className="w-full text-sm">
               <thead className="bg-[#262730] text-gray-400 sticky top-0">
@@ -175,8 +195,10 @@ export default function OperatorsPage() {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
+        ) : (
+          <p className="text-gray-500 text-sm">No QC data for the selected range.</p>
+        )}
+      </div>
 
       {/* Date-wise completion */}
       <div>

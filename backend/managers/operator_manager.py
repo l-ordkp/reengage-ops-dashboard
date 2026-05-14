@@ -10,7 +10,7 @@ from backend.repositories.operator_repository import (
     fetch_operator_daily_breakdown_14d,
     fetch_operator_performance_14d,
 )
-from backend.repositories.ops_log_repository import fetch_recent_ops_log
+from backend.repositories.ops_log_repository import fetch_qc_log
 from backend.repositories.user_repository import fetch_all_users
 from backend.utils.serializers import df_to_dicts
 
@@ -49,18 +49,13 @@ def get_chain_breakdown(operator_email: Optional[str] = None) -> list[dict]:
     return df_to_dicts(data)
 
 
-def get_qc_summary() -> list[dict]:
-    """QC accuracy from ops_log remarks."""
-    ops = fetch_recent_ops_log()
+def get_qc_summary(date_from: Optional[str] = None, date_to: Optional[str] = None) -> list[dict]:
+    """QC accuracy from ops_log remarks. Optional date range filter."""
+    qc_rows = fetch_qc_log(date_from=date_from, date_to=date_to)
     users = fetch_all_users()
-    if ops.empty:
-        return []
-    qc_rows = ops[
-        (ops["action"] == "mark_responded") &
-        (ops["remarks"].str.contains("resp:", na=False))
-    ].copy()
     if qc_rows.empty:
         return []
+    qc_rows = qc_rows.copy()
     qc_rows["resp_match"] = qc_rows["remarks"].str.contains("resp:exact", na=False)
     qc_rows["disc_match"] = qc_rows["remarks"].str.contains("disc:exact", na=False)
     summary = qc_rows.groupby("operator_email").agg(

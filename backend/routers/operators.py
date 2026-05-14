@@ -33,5 +33,9 @@ def chain_breakdown(operator_email: Optional[str] = None, user: dict = Depends(r
 
 
 @router.get("/qc-summary")
-def qc_summary(user: dict = Depends(require_lead)):
-    return get_qc_summary()
+def qc_summary(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user: dict = Depends(require_lead),
+):
+    return get_qc_summary(date_from, date_to)

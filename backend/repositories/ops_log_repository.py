@@ -30,6 +30,29 @@ def fetch_recent_ops_log(limit: int = 500) -> pd.DataFrame:
     """)
 
 
+@cached(ttl=120)
+def fetch_qc_log(date_from: str | None = None, date_to: str | None = None) -> pd.DataFrame:
+    """
+    Fetch all `mark_responded` entries that contain QC data (no limit).
+    Optionally filter by date range (inclusive, on processing_timestamp).
+    """
+    where_parts = [
+        "action = 'mark_responded'",
+        "remarks LIKE '%resp:%'",
+    ]
+    if date_from:
+        where_parts.append(f"DATE(processing_timestamp, 'America/Chicago') >= DATE('{date_from}')")
+    if date_to:
+        where_parts.append(f"DATE(processing_timestamp, 'America/Chicago') <= DATE('{date_to}')")
+    where_clause = " AND ".join(where_parts)
+    return bq_read(f"""
+        SELECT review_uid, operator_email, remarks, processing_timestamp
+        FROM `{TABLE_OPS_LOG}`
+        WHERE {where_clause}
+        ORDER BY processing_timestamp DESC
+    """)
+
+
 def log_action(
     review_uid: str, platform: str, chain_name: str, action: str,
     operator_email: str, performed_by: str, remarks: str = "",

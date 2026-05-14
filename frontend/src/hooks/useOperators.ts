@@ -54,11 +54,15 @@ interface QCSummary {
   disc_accuracy: number;
 }
 
-export function useQCSummary() {
+export function useQCSummary(dateFrom?: string, dateTo?: string) {
   return useQuery<QCSummary[]>({
-    queryKey: ["qc-summary"],
+    queryKey: ["qc-summary", dateFrom, dateTo],
     queryFn: async () => {
-      const { data } = await api.get("/api/operators/qc-summary");
+      const params = new URLSearchParams();
+      if (dateFrom) params.append("date_from", dateFrom);
+      if (dateTo) params.append("date_to", dateTo);
+      const qs = params.toString();
+      const { data } = await api.get(`/api/operators/qc-summary${qs ? `?${qs}` : ""}`);
       return data;
     },
   });
