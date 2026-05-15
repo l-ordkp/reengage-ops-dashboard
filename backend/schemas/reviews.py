@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 class GenerateBatchBody(BaseModel):
     review_uids: list[str]
+    force: bool = False
 
 
 class GenerateBatchResult(BaseModel):

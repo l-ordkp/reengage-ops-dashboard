@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends
 
 from backend.auth.dependencies import require_lead
 from backend.managers.operator_manager import (
-    get_chain_breakdown, get_daily_breakdown, get_performance, get_qc_summary,
+    get_chain_breakdown, get_daily_breakdown, get_performance,
+    get_qc_mismatches, get_qc_summary,
 )
 
 router = APIRouter(prefix="/api/operators", tags=["operators"])
@@ -39,3 +40,12 @@ def qc_summary(
     user: dict = Depends(require_lead),
 ):
     return get_qc_summary(date_from, date_to)
+
+
+@router.get("/qc-mismatches")
+def qc_mismatches(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user: dict = Depends(require_lead),
+):
+    return get_qc_mismatches(date_from, date_to)

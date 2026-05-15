@@ -9,8 +9,9 @@ from backend.utils.cache import cached
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _safe(val: str) -> str:
-    return (val or "").replace("'", "''")
+def _escape_sql(value: str) -> str:
+    """Escape single quotes so the value is safe to embed inside a SQL literal."""
+    return (value or "").replace("'", "''")
 
 
 def _now_str() -> str:
@@ -36,12 +37,12 @@ def fetch_all_assignments_14d() -> pd.DataFrame:
 @cached(ttl=120)
 def fetch_my_pending_assignments(email: str) -> pd.DataFrame:
     """Operator's pending assignments only."""
-    se = _safe(email)
+    safe_email = _escape_sql(email)
     return bq_read(f"""
         SELECT assignment_id, review_uid, order_id, chain_name, platform,
                days_left, status, assigned_at, completed_at
         FROM `{TABLE_ASSIGNMENTS}`
-        WHERE operator_email = '{se}'
+        WHERE operator_email = '{safe_email}'
           AND status = 'pending'
           AND assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
         ORDER BY days_left ASC
@@ -61,10 +62,10 @@ def fetch_already_assigned_uids() -> set[str]:
 
 def fetch_assignment_by_order_id(order_id: str) -> pd.DataFrame:
     """Find the most recent assignment for an order_id (used by extension mark-responded)."""
-    safe_id = _safe(order_id)
+    safe_order_id = _escape_sql(order_id)
     return bq_read(f"""
         SELECT assignment_id FROM `{TABLE_ASSIGNMENTS}`
-        WHERE order_id = '{safe_id}'
+        WHERE order_id = '{safe_order_id}'
         LIMIT 1
     """)
 
@@ -76,16 +77,16 @@ def insert_assignments(rows: list[dict]) -> None:
     if not rows:
         return
     now = _now_str()
-    values = []
-    for r in rows:
-        values.append(
-            f"('{r['assignment_id']}', '{_safe(r['review_uid'])}', '{_safe(r.get('order_id', ''))}', "
-            f"'{_safe(r['operator_email'])}', '{_safe(r['chain_name'])}', '{_safe(r['platform'])}', "
-            f"{r['days_left']}, 'pending', TIMESTAMP('{now}'), NULL)"
+    value_rows = []
+    for row in rows:
+        value_rows.append(
+            f"('{row['assignment_id']}', '{_escape_sql(row['review_uid'])}', '{_escape_sql(row.get('order_id', ''))}', "
+            f"'{_escape_sql(row['operator_email'])}', '{_escape_sql(row['chain_name'])}', '{_escape_sql(row['platform'])}', "
+            f"{row['days_left']}, 'pending', TIMESTAMP('{now}'), NULL)"
         )
     batch_size = 500
-    for i in range(0, len(values), batch_size):
-        batch = values[i:i + batch_size]
+    for batch_start in range(0, len(value_rows), batch_size):
+        batch = value_rows[batch_start:batch_start + batch_size]
         bq_exec(f"""
         INSERT INTO `{TABLE_ASSIGNMENTS}`
             (assignment_id, review_uid, order_id, operator_email,
@@ -97,17 +98,17 @@ def insert_assignments(rows: list[dict]) -> None:
 def mark_assignment_completed(assignment_id: str) -> None:
     """Set an assignment to completed and propagate `is_loop_replied=TRUE`."""
     now = _now_str()
-    sa = _safe(assignment_id)
+    safe_assignment_id = _escape_sql(assignment_id)
     bq_exec(f"""
     UPDATE `{TABLE_ASSIGNMENTS}`
     SET status = 'completed', completed_at = TIMESTAMP('{now}')
-    WHERE assignment_id = '{sa}'
+    WHERE assignment_id = '{safe_assignment_id}'
     """)
     bq_exec(f"""
     UPDATE `{TABLE_AUTOMATION_REVIEWS}`
     SET is_loop_replied = TRUE
     WHERE order_id IN (
-        SELECT order_id FROM `{TABLE_ASSIGNMENTS}` WHERE assignment_id = '{sa}'
+        SELECT order_id FROM `{TABLE_ASSIGNMENTS}` WHERE assignment_id = '{safe_assignment_id}'
     )
     """)
 
@@ -115,11 +116,11 @@ def mark_assignment_completed(assignment_id: str) -> None:
 def update_assignment_by_order_id(order_id: str) -> None:
     """Mark pending assignment(s) for this order_id as completed (extension flow)."""
     now = _now_str()
-    safe_id = _safe(order_id)
+    safe_order_id = _escape_sql(order_id)
     bq_exec(f"""
         UPDATE `{TABLE_ASSIGNMENTS}`
         SET status = 'completed', completed_at = TIMESTAMP('{now}')
-        WHERE order_id = '{safe_id}' AND status = 'pending'
+        WHERE order_id = '{safe_order_id}' AND status = 'pending'
     """)
 
 
@@ -130,24 +131,29 @@ def insert_completed_assignment(
     """Create a synthetic completed assignment (used when extension marks a review without prior assignment)."""
     import uuid
     now = _now_str()
+    safe_review_uid = _escape_sql(review_uid)
+    safe_order_id = _escape_sql(order_id)
+    safe_operator_email = _escape_sql(operator_email)
+    safe_chain_name = _escape_sql(chain_name)
+    safe_platform = _escape_sql(platform)
     bq_exec(f"""
         INSERT INTO `{TABLE_ASSIGNMENTS}`
             (assignment_id, review_uid, order_id, operator_email,
              chain_name, platform, days_left, status, assigned_at, completed_at)
         VALUES
-            ('{uuid.uuid4()}', '{_safe(review_uid)}', '{_safe(order_id)}', '{_safe(operator_email)}',
-             '{_safe(chain_name)}', '{_safe(platform)}', 0, 'completed',
+            ('{uuid.uuid4()}', '{safe_review_uid}', '{safe_order_id}', '{safe_operator_email}',
+             '{safe_chain_name}', '{safe_platform}', 0, 'completed',
              TIMESTAMP('{now}'), TIMESTAMP('{now}'))
     """)
 
 
 def mark_is_loop_replied(order_id: str) -> None:
     """Set is_loop_replied=TRUE on automation_reviews for a given order."""
-    safe_id = _safe(order_id)
+    safe_order_id = _escape_sql(order_id)
     bq_exec(f"""
         UPDATE `{TABLE_AUTOMATION_REVIEWS}`
         SET is_loop_replied = TRUE
-        WHERE order_id = '{safe_id}'
+        WHERE order_id = '{safe_order_id}'
     """)
 
 
@@ -194,11 +200,11 @@ def redistribute_assignments_for_removed_operator(removed_email: str) -> int:
     from collections import defaultdict
     from backend.config import ROLE_LEAD, TABLE_USERS
 
-    se = _safe(removed_email)
+    safe_removed_email = _escape_sql(removed_email)
     orphaned_df = bq_read(f"""
         SELECT assignment_id, review_uid, order_id, chain_name, platform, days_left
         FROM `{TABLE_ASSIGNMENTS}`
-        WHERE operator_email = '{se}' AND status = 'pending'
+        WHERE operator_email = '{safe_removed_email}' AND status = 'pending'
         ORDER BY days_left ASC
     """)
     if orphaned_df.empty:
@@ -206,7 +212,7 @@ def redistribute_assignments_for_removed_operator(removed_email: str) -> int:
 
     remaining_df = bq_read(f"""
         SELECT email FROM `{TABLE_USERS}`
-        WHERE approved = TRUE AND role NOT IN ('{ROLE_LEAD}', 'manager') AND email != '{se}'
+        WHERE approved = TRUE AND role NOT IN ('{ROLE_LEAD}', 'manager') AND email != '{safe_removed_email}'
     """)
     if remaining_df.empty:
         return 0
@@ -215,44 +221,49 @@ def redistribute_assignments_for_removed_operator(removed_email: str) -> int:
     existing_df = bq_read(f"""
         SELECT operator_email, chain_name, platform
         FROM `{TABLE_ASSIGNMENTS}`
-        WHERE status = 'pending' AND operator_email != '{se}'
+        WHERE status = 'pending' AND operator_email != '{safe_removed_email}'
     """)
 
-    op_combos: dict[str, set] = defaultdict(set)
-    op_counts: dict[str, int] = defaultdict(int)
+    combos_per_operator: dict[str, set] = defaultdict(set)
+    counts_per_operator: dict[str, int] = defaultdict(int)
     if not existing_df.empty:
         for _, row in existing_df.iterrows():
-            op_combos[row["operator_email"]].add((row["chain_name"], row["platform"]))
-            op_counts[row["operator_email"]] += 1
-    for op in operators:
-        op_combos.setdefault(op, set())
-        op_counts.setdefault(op, 0)
+            combos_per_operator[row["operator_email"]].add((row["chain_name"], row["platform"]))
+            counts_per_operator[row["operator_email"]] += 1
+    for operator_email in operators:
+        combos_per_operator.setdefault(operator_email, set())
+        counts_per_operator.setdefault(operator_email, 0)
 
-    groups: dict[tuple, list] = defaultdict(list)
+    reviews_by_chain_platform: dict[tuple, list] = defaultdict(list)
     for _, row in orphaned_df.iterrows():
-        groups[(row["chain_name"], row["platform"])].append(row)
+        reviews_by_chain_platform[(row["chain_name"], row["platform"])].append(row)
 
     now = _now_str()
-    updates: list[tuple[str, str]] = []
-    for (chain, plat), reviews in groups.items():
-        has_combo = [op for op in operators if (chain, plat) in op_combos[op]]
-        no_combo = [op for op in operators if (chain, plat) not in op_combos[op]]
-        has_combo.sort(key=lambda op: op_counts[op])
-        no_combo.sort(key=lambda op: (len(op_combos[op]), op_counts[op]))
-        preferred = has_combo + no_combo
-        for i, row in enumerate(reviews):
-            target = preferred[i % len(preferred)]
-            updates.append((row["assignment_id"], target))
-            op_counts[target] += 1
-            op_combos[target].add((chain, plat))
+    reassignments: list[tuple[str, str]] = []
+    for (chain, platform), reviews in reviews_by_chain_platform.items():
+        operators_with_combo = [op for op in operators if (chain, platform) in combos_per_operator[op]]
+        operators_without_combo = [op for op in operators if (chain, platform) not in combos_per_operator[op]]
+        operators_with_combo.sort(key=lambda op: counts_per_operator[op])
+        operators_without_combo.sort(key=lambda op: (len(combos_per_operator[op]), counts_per_operator[op]))
+        preferred_operators = operators_with_combo + operators_without_combo
+        for review_index, row in enumerate(reviews):
+            target_operator = preferred_operators[review_index % len(preferred_operators)]
+            reassignments.append((row["assignment_id"], target_operator))
+            counts_per_operator[target_operator] += 1
+            combos_per_operator[target_operator].add((chain, platform))
 
-    if updates:
-        cases = " ".join(f"WHEN '{_safe(aid)}' THEN '{_safe(t)}'" for aid, t in updates)
-        aid_list = ", ".join(f"'{_safe(aid)}'" for aid, _ in updates)
+    if reassignments:
+        case_clauses = " ".join(
+            f"WHEN '{_escape_sql(assignment_id)}' THEN '{_escape_sql(target_operator)}'"
+            for assignment_id, target_operator in reassignments
+        )
+        assignment_id_list = ", ".join(
+            f"'{_escape_sql(assignment_id)}'" for assignment_id, _ in reassignments
+        )
         bq_exec(f"""
         UPDATE `{TABLE_ASSIGNMENTS}`
-        SET operator_email = CASE assignment_id {cases} END,
+        SET operator_email = CASE assignment_id {case_clauses} END,
             assigned_at = TIMESTAMP('{now}')
-        WHERE assignment_id IN ({aid_list})
+        WHERE assignment_id IN ({assignment_id_list})
         """)
     return len(orphaned_df)

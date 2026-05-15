@@ -27,42 +27,65 @@ def fetch_reviews_14d() -> pd.DataFrame:
     sql = f"""
     WITH eligible_reviews AS (
         SELECT
-            COALESCE(ar.review_id, ar.order_id) AS review_uid,
-            ar.order_id, ar.review_id,
-            sm.chain AS chain_name, sm.b_name_id, sm.vb_name AS brand_name,
-            ar.platform, ar.slug, ar.store_id,
-            sm.username AS portal_username, sm.password AS portal_password,
-            ar.customer_name, ar.user_id AS customer_id,
-            SAFE_CAST(ar.orders_count AS INT64) AS orders_count,
-            CASE WHEN SAFE_CAST(ar.orders_count AS INT64) > 1 THEN 'existing' ELSE 'new' END AS customer_type,
-            ar.star_rating, ar.rating_type, ar.rating_value, ar.review_text,
-            ar.is_replied, ar.replied_comment, ar.items, ar.order_value,
-            COALESCE(ar.review_timestamp, ar.order_timestamp) AS event_timestamp,
-            DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')) AS review_date
-        FROM `{TABLE_AUTOMATION_REVIEWS}` ar
-        INNER JOIN `{TABLE_SLUG_AM_MAPPING}` sm ON ar.slug = sm.slug
-        WHERE COALESCE(ar.review_timestamp, ar.order_timestamp)
+            COALESCE(automation_review.review_id, automation_review.order_id) AS review_uid,
+            automation_review.order_id,
+            automation_review.review_id,
+            slug_mapping.chain AS chain_name,
+            slug_mapping.b_name_id,
+            slug_mapping.vb_name AS brand_name,
+            automation_review.platform,
+            automation_review.slug,
+            automation_review.store_id,
+            slug_mapping.username AS portal_username,
+            slug_mapping.password AS portal_password,
+            automation_review.customer_name,
+            automation_review.user_id AS customer_id,
+            SAFE_CAST(automation_review.orders_count AS INT64) AS orders_count,
+            CASE
+                WHEN SAFE_CAST(automation_review.orders_count AS INT64) > 1 THEN 'existing'
+                ELSE 'new'
+            END AS customer_type,
+            automation_review.star_rating,
+            automation_review.rating_type,
+            automation_review.rating_value,
+            automation_review.review_text,
+            automation_review.is_replied,
+            automation_review.replied_comment,
+            automation_review.items,
+            automation_review.order_value,
+            COALESCE(automation_review.review_timestamp, automation_review.order_timestamp) AS event_timestamp,
+            DATE(DATETIME(
+                COALESCE(automation_review.review_timestamp, automation_review.order_timestamp),
+                'America/Chicago'
+            )) AS review_date
+        FROM `{TABLE_AUTOMATION_REVIEWS}` AS automation_review
+        INNER JOIN `{TABLE_SLUG_AM_MAPPING}` AS slug_mapping
+            ON automation_review.slug = slug_mapping.slug
+        WHERE COALESCE(automation_review.review_timestamp, automation_review.order_timestamp)
               >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
           AND EXISTS (
-              SELECT 1 FROM `{TABLE_REVIEW_RESPONSE_CFG}` rrc
-              WHERE rrc.paused = FALSE AND sm.chain = rrc.chain_name
-              AND (
-                  ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(rrc.vb_platforms), [])) = 0
-                  OR ar.platform IN UNNEST(JSON_VALUE_ARRAY(rrc.vb_platforms))
-              )
-              AND (
-                  ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(rrc.ratings), [])) = 0
-                  OR CAST(ar.star_rating AS STRING) IN UNNEST(JSON_VALUE_ARRAY(rrc.ratings))
-                  OR ar.rating_value IN UNNEST(JSON_VALUE_ARRAY(rrc.ratings))
-              )
+              SELECT 1
+              FROM `{TABLE_REVIEW_RESPONSE_CFG}` AS response_config
+              WHERE response_config.paused = FALSE
+                AND slug_mapping.chain = response_config.chain_name
+                AND (
+                    ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(response_config.vb_platforms), [])) = 0
+                    OR automation_review.platform IN UNNEST(JSON_VALUE_ARRAY(response_config.vb_platforms))
+                )
+                AND (
+                    ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(response_config.ratings), [])) = 0
+                    OR CAST(automation_review.star_rating AS STRING) IN UNNEST(JSON_VALUE_ARRAY(response_config.ratings))
+                    OR automation_review.rating_value IN UNNEST(JSON_VALUE_ARRAY(response_config.ratings))
+                )
           )
         QUALIFY ROW_NUMBER() OVER (
-            PARTITION BY COALESCE(ar.review_id, ar.order_id)
-            ORDER BY COALESCE(ar.review_timestamp, ar.order_timestamp) DESC
+            PARTITION BY COALESCE(automation_review.review_id, automation_review.order_id)
+            ORDER BY COALESCE(automation_review.review_timestamp, automation_review.order_timestamp) DESC
         ) = 1
     ),
-    with_days AS (
-        SELECT *,
+    reviews_with_deadline AS (
+        SELECT
+            eligible_reviews.*,
             CASE
                 WHEN platform = 'Doordash' THEN
                     DATE_DIFF(DATE_ADD(review_date, INTERVAL 7 DAY), CURRENT_DATE('America/Chicago'), DAY)
@@ -72,22 +95,30 @@ def fetch_reviews_14d() -> pd.DataFrame:
             END AS days_left
         FROM eligible_reviews
     ),
-    with_response AS (
-        SELECT w.*,
-            rr.response_text AS ai_response,
-            rr.response_type AS rr_response_type,
-            rr.coupon_value, rr.response_sent, rr.config_id
-        FROM with_days w
-        LEFT JOIN `{TABLE_REVIEW_RESPONSES}` rr ON w.order_id = rr.order_id
+    reviews_with_response AS (
+        SELECT
+            reviews_with_deadline.*,
+            review_response.response_text AS ai_response,
+            review_response.response_type AS ai_response_type,
+            review_response.coupon_value,
+            review_response.response_sent,
+            review_response.config_id
+        FROM reviews_with_deadline
+        LEFT JOIN `{TABLE_REVIEW_RESPONSES}` AS review_response
+            ON reviews_with_deadline.order_id = review_response.order_id
     ),
-    with_assignment AS (
-        SELECT w.*, a.status AS assignment_status
-        FROM with_response w
-        LEFT JOIN `{TABLE_ASSIGNMENTS}` a
-            ON w.review_uid = a.review_uid AND a.status = 'completed'
+    reviews_with_assignment AS (
+        SELECT
+            reviews_with_response.*,
+            assignment.status AS assignment_status
+        FROM reviews_with_response
+        LEFT JOIN `{TABLE_ASSIGNMENTS}` AS assignment
+            ON reviews_with_response.review_uid = assignment.review_uid
+           AND assignment.status = 'completed'
     ),
-    with_status AS (
-        SELECT *,
+    reviews_with_status AS (
+        SELECT
+            reviews_with_assignment.*,
             CASE
                 WHEN is_replied = TRUE THEN 'RESPONDED'
                 WHEN response_sent IS NOT NULL THEN 'RESPONDED'
@@ -125,7 +156,7 @@ def fetch_reviews_14d() -> pd.DataFrame:
                     CONCAT('https://www.doordash.com/merchant/feedback?store_id=', store_id)
                 ELSE ''
             END AS portal_link
-        FROM with_assignment
+        FROM reviews_with_assignment
     )
     SELECT
         review_uid, order_id, review_id, chain_name, b_name_id, brand_name,
@@ -134,10 +165,10 @@ def fetch_reviews_14d() -> pd.DataFrame:
         CAST(star_rating AS STRING) AS star_rating, rating_type, rating_value,
         rating_numeric, rating_display, review_text, items, order_value,
         review_date, days_left,
-        portal_link, response_text, rr_response_type AS response_type, coupon_value,
+        portal_link, response_text, ai_response_type AS response_type, coupon_value,
         CAST(config_id AS STRING) AS config_id, status, priority, is_replied,
         portal_username, portal_password
-    FROM with_status
+    FROM reviews_with_status
     ORDER BY
         CASE priority WHEN 'CRITICAL' THEN 1 WHEN 'URGENT' THEN 2 ELSE 3 END,
         days_left ASC, chain_name, platform, slug

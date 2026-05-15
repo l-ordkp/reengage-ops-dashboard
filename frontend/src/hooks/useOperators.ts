@@ -54,6 +54,32 @@ interface QCSummary {
   disc_accuracy: number;
 }
 
+export interface QCMismatch {
+  responded_at: string;
+  operator_email: string;
+  operator_name?: string;
+  platform: string;
+  chain_name: string;
+  review_uid: string;
+  customer_name?: string;
+  resp_mismatch: boolean;
+  disc_mismatch: boolean;
+}
+
+export function useQCMismatches(dateFrom?: string, dateTo?: string) {
+  return useQuery<QCMismatch[]>({
+    queryKey: ["qc-mismatches", dateFrom, dateTo],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (dateFrom) params.append("date_from", dateFrom);
+      if (dateTo) params.append("date_to", dateTo);
+      const qs = params.toString();
+      const { data } = await api.get(`/api/operators/qc-mismatches${qs ? `?${qs}` : ""}`);
+      return data;
+    },
+  });
+}
+
 export function useQCSummary(dateFrom?: string, dateTo?: string) {
   return useQuery<QCSummary[]>({
     queryKey: ["qc-summary", dateFrom, dateTo],

@@ -10,7 +10,7 @@ from backend.repositories.operator_repository import (
     fetch_operator_daily_breakdown_14d,
     fetch_operator_performance_14d,
 )
-from backend.repositories.ops_log_repository import fetch_qc_log
+from backend.repositories.ops_log_repository import fetch_qc_log, fetch_qc_mismatches
 from backend.repositories.user_repository import fetch_all_users
 from backend.utils.serializers import df_to_dicts
 
@@ -47,6 +47,15 @@ def get_chain_breakdown(operator_email: Optional[str] = None) -> list[dict]:
     if operator_email and not data.empty:
         data = data[data["operator_email"] == operator_email]
     return df_to_dicts(data)
+
+
+def get_qc_mismatches(
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+) -> list[dict]:
+    """Per-row drilldown of QC mismatches. All data sourced from BigQuery
+    (ops_log + automation_reviews + review_responses CDC mirror + users)."""
+    mismatches = fetch_qc_mismatches(date_from=date_from, date_to=date_to)
+    return df_to_dicts(mismatches)
 
 
 def get_qc_summary(date_from: Optional[str] = None, date_to: Optional[str] = None) -> list[dict]:

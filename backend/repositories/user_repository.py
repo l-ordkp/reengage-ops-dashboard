@@ -13,23 +13,24 @@ def _now_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _safe(val: str) -> str:
-    return val.replace("'", "''")
+def _escape_sql(value: str) -> str:
+    """Escape single quotes so the value is safe to embed inside a SQL literal."""
+    return value.replace("'", "''")
 
 
 def fetch_user(email: str) -> dict | None:
-    se = _safe(email.lower())
+    safe_email = _escape_sql(email.lower())
     df = bq_read(f"""
         SELECT email, name, role, approved, reduction_pct
-        FROM `{TABLE_USERS}` WHERE LOWER(email) = '{se}' LIMIT 1
+        FROM `{TABLE_USERS}` WHERE LOWER(email) = '{safe_email}' LIMIT 1
     """)
     if df.empty:
         return None
-    r = df.iloc[0]
+    row = df.iloc[0]
     return {
-        "email": r["email"], "name": r["name"], "role": r["role"],
-        "approved": bool(r["approved"]),
-        "reduction_pct": float(r.get("reduction_pct", 0)),
+        "email": row["email"], "name": row["name"], "role": row["role"],
+        "approved": bool(row["approved"]),
+        "reduction_pct": float(row.get("reduction_pct", 0)),
     }
 
 
@@ -61,52 +62,56 @@ def insert_or_update_user(
     email: str, name: str, role: str, reduction_pct: float, added_by: str,
 ) -> None:
     now = _now_str()
-    se, sn, sa = _safe(email.lower()), _safe(name), _safe(added_by)
+    safe_email = _escape_sql(email.lower())
+    safe_name = _escape_sql(name)
+    safe_added_by = _escape_sql(added_by)
     bq_exec(f"""
-    MERGE `{TABLE_USERS}` T USING (SELECT '{se}' AS email) S ON LOWER(T.email) = S.email
+    MERGE `{TABLE_USERS}` AS target
+    USING (SELECT '{safe_email}' AS email) AS source
+    ON LOWER(target.email) = source.email
     WHEN MATCHED THEN UPDATE SET
-        name = '{sn}', role = '{role}', approved = TRUE,
+        name = '{safe_name}', role = '{role}', approved = TRUE,
         reduction_pct = {reduction_pct}, updated_at = TIMESTAMP('{now}')
     WHEN NOT MATCHED THEN INSERT
         (email, name, role, approved, reduction_pct, added_by, created_at, updated_at)
-    VALUES ('{se}', '{sn}', '{role}', TRUE, {reduction_pct}, '{sa}',
+    VALUES ('{safe_email}', '{safe_name}', '{role}', TRUE, {reduction_pct}, '{safe_added_by}',
             TIMESTAMP('{now}'), TIMESTAMP('{now}'))
     """)
 
 
 def update_role(email: str, new_role: str, reduction_pct: float) -> None:
     now = _now_str()
-    se = _safe(email.lower())
+    safe_email = _escape_sql(email.lower())
     bq_exec(f"""
     UPDATE `{TABLE_USERS}`
     SET role = '{new_role}', reduction_pct = {reduction_pct},
         updated_at = TIMESTAMP('{now}')
-    WHERE LOWER(email) = '{se}'
+    WHERE LOWER(email) = '{safe_email}'
     """)
 
 
 def update_approval(email: str, approved: bool) -> None:
     now = _now_str()
-    se = _safe(email.lower())
+    safe_email = _escape_sql(email.lower())
     bq_exec(f"""
     UPDATE `{TABLE_USERS}`
     SET approved = {approved}, updated_at = TIMESTAMP('{now}')
-    WHERE LOWER(email) = '{se}'
+    WHERE LOWER(email) = '{safe_email}'
     """)
 
 
 def delete_user(email: str) -> None:
-    se = _safe(email.lower())
-    bq_exec(f"DELETE FROM `{TABLE_USERS}` WHERE LOWER(email) = '{se}'")
+    safe_email = _escape_sql(email.lower())
+    bq_exec(f"DELETE FROM `{TABLE_USERS}` WHERE LOWER(email) = '{safe_email}'")
 
 
 def update_name_if_empty(email: str, name: str) -> None:
     """Set name on a user that was added without one (used during OAuth bootstrap)."""
-    se = _safe(email.lower())
-    sn = _safe(name)
+    safe_email = _escape_sql(email.lower())
+    safe_name = _escape_sql(name)
     now = _now_str()
     bq_exec(f"""
         UPDATE `{TABLE_USERS}`
-        SET name = '{sn}', updated_at = TIMESTAMP('{now}')
-        WHERE LOWER(email) = '{se}'
+        SET name = '{safe_name}', updated_at = TIMESTAMP('{now}')
+        WHERE LOWER(email) = '{safe_email}'
     """)

@@ -10,8 +10,9 @@ from backend.config import TABLE_OPS_LOG
 from backend.utils.cache import cached
 
 
-def _safe(val: str) -> str:
-    return (val or "").replace("'", "''")
+def _escape_sql(value: str) -> str:
+    """Escape single quotes so the value is safe to embed inside a SQL literal."""
+    return (value or "").replace("'", "''")
 
 
 def _now_str() -> str:
@@ -53,18 +54,71 @@ def fetch_qc_log(date_from: str | None = None, date_to: str | None = None) -> pd
     """)
 
 
+@cached(ttl=120)
+def fetch_qc_mismatches(
+    date_from: str | None = None, date_to: str | None = None,
+) -> pd.DataFrame:
+    """
+    Reviews where the operator's response and/or discount did NOT match the AI
+    suggestion. Just identifies which reviews need investigation — the Search
+    tab handles the deep-dive into AI response / posted text / portal link.
+    """
+    from backend.config import TABLE_AUTOMATION_REVIEWS, TABLE_USERS
+
+    where_parts = [
+        "ops_log.action = 'mark_responded'",
+        "(ops_log.remarks LIKE '%resp:MISMATCH%' OR ops_log.remarks LIKE '%disc:MISMATCH%')",
+    ]
+    if date_from:
+        where_parts.append(
+            f"DATE(ops_log.processing_timestamp, 'America/Chicago') >= DATE('{date_from}')"
+        )
+    if date_to:
+        where_parts.append(
+            f"DATE(ops_log.processing_timestamp, 'America/Chicago') <= DATE('{date_to}')"
+        )
+    where_clause = " AND ".join(where_parts)
+
+    return bq_read(f"""
+        SELECT
+            ops_log.processing_timestamp AS responded_at,
+            ops_log.operator_email,
+            users.name AS operator_name,
+            ops_log.platform,
+            ops_log.chain_name,
+            ops_log.review_uid,
+            automation_review.customer_name,
+            REGEXP_CONTAINS(ops_log.remarks, r'resp:MISMATCH') AS resp_mismatch,
+            REGEXP_CONTAINS(ops_log.remarks, r'disc:MISMATCH') AS disc_mismatch
+        FROM `{TABLE_OPS_LOG}` AS ops_log
+        LEFT JOIN `{TABLE_AUTOMATION_REVIEWS}` AS automation_review
+            ON ops_log.review_uid = COALESCE(automation_review.review_id, automation_review.order_id)
+        LEFT JOIN `{TABLE_USERS}` AS users
+            ON LOWER(users.email) = LOWER(ops_log.operator_email)
+        WHERE {where_clause}
+        ORDER BY ops_log.processing_timestamp DESC
+    """)
+
+
 def log_action(
     review_uid: str, platform: str, chain_name: str, action: str,
     operator_email: str, performed_by: str, remarks: str = "",
 ) -> None:
     """Insert a single audit log row."""
     now = _now_str()
+    safe_review_uid = _escape_sql(review_uid)
+    safe_platform = _escape_sql(platform)
+    safe_chain_name = _escape_sql(chain_name)
+    safe_action = _escape_sql(action)
+    safe_operator_email = _escape_sql(operator_email)
+    safe_performed_by = _escape_sql(performed_by)
+    safe_remarks = _escape_sql(remarks)
     bq_exec(f"""
     INSERT INTO `{TABLE_OPS_LOG}`
         (id, review_uid, platform, chain_name, action,
          operator_email, performed_by, remarks, processing_timestamp)
     VALUES
-        ('{uuid.uuid4()}', '{_safe(review_uid)}', '{_safe(platform)}', '{_safe(chain_name)}',
-         '{_safe(action)}', '{_safe(operator_email)}', '{_safe(performed_by)}',
-         '{_safe(remarks)}', TIMESTAMP('{now}'))
+        ('{uuid.uuid4()}', '{safe_review_uid}', '{safe_platform}', '{safe_chain_name}',
+         '{safe_action}', '{safe_operator_email}', '{safe_performed_by}',
+         '{safe_remarks}', TIMESTAMP('{now}'))
     """)

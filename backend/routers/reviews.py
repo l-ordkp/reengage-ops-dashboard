@@ -59,43 +59,61 @@ def search_endpoint(
 
 @router.post("/generate-batch")
 def generate_batch(body: GenerateBatchBody, user: dict = Depends(get_current_user)):
+    import pandas as pd
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Lock
+
     from backend.managers.response_manager import find_matching_config, generate_and_save
     from fastapi import HTTPException
 
+    # Clear the cache up front so this chunk sees any response_text values
+    # written by an earlier chunk in the same FE-driven run.
+    fetch_reviews_14d.clear()
     df = fetch_reviews_14d()
     configs = fetch_configs_for_matching()
     if not configs:
         raise HTTPException(status_code=400, detail="No response configs found")
 
     results = {"success": 0, "skipped": 0, "failed": 0, "details": []}
-    for uid in body.review_uids:
+    results_lock = Lock()
+
+    def record(entry: dict, bucket: str) -> None:
+        with results_lock:
+            results[bucket] += 1
+            results["details"].append(entry)
+
+    def process_uid(uid: str) -> None:
         row = df[df["review_uid"] == uid]
         if row.empty:
-            results["skipped"] += 1
-            results["details"].append({"uid": uid, "status": "skipped", "reason": "review not found"})
-            continue
+            record({"uid": uid, "status": "skipped", "reason": "review not found"}, "skipped")
+            return
 
         review_dict = row.iloc[0].to_dict()
+
+        existing_response = review_dict.get("response_text")
+        if existing_response and pd.notna(existing_response) and not body.force:
+            record({"uid": uid, "status": "skipped", "reason": "already generated"}, "skipped")
+            return
+
         config = find_matching_config(review_dict, configs)
         if not config:
-            results["skipped"] += 1
-            results["details"].append({"uid": uid, "status": "skipped", "reason": "no matching config"})
-            continue
+            record({"uid": uid, "status": "skipped", "reason": "no matching config"}, "skipped")
+            return
 
         try:
             result = generate_and_save(review_dict, config)
             if result.get("saved"):
-                results["success"] += 1
-                results["details"].append({"uid": uid, "status": "success"})
+                record({"uid": uid, "status": "success"}, "success")
             elif result.get("response_text"):
-                results["success"] += 1
-                results["details"].append({"uid": uid, "status": "success", "note": "generated but DB save failed"})
+                record({"uid": uid, "status": "success", "note": "generated but DB save failed"}, "success")
             else:
-                results["failed"] += 1
-                results["details"].append({"uid": uid, "status": "failed", "reason": result.get("errors", "generation failed")})
+                record({"uid": uid, "status": "failed", "reason": result.get("errors", "generation failed")}, "failed")
         except Exception as e:
-            results["failed"] += 1
-            results["details"].append({"uid": uid, "status": "failed", "reason": f"{type(e).__name__}: {e}"})
+            record({"uid": uid, "status": "failed", "reason": f"{type(e).__name__}: {e}"}, "failed")
 
-    fetch_reviews_14d.clear()
+    # 5-worker cap respects PG pool (3 + 5 overflow shared across endpoints)
+    # and OpenAI rate limits for gpt-4.1-nano default tier.
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        list(pool.map(process_uid, body.review_uids))
+
     return results

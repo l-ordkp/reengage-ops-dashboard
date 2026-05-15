@@ -95,17 +95,31 @@ export default function QueuePage() {
         />
 
         {missingAI > 0 && (
-          <button
-            onClick={() => {
-              const uids = (data?.reviews || []).filter((r) => !r.response_text && r.status === "PENDING").map((r) => r.review_uid);
-              if (uids.length > 0) generateResponses.mutate(uids);
-            }}
-            disabled={generateResponses.isPending}
-            className="ml-auto flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
-          >
-            <FiZap size={15} />
-            {generateResponses.isPending ? "Generating..." : "Generate Responses"}
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            {generateResponses.isPending && generateResponses.progress && (
+              <button
+                onClick={() => generateResponses.cancel()}
+                className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+            )}
+            <button
+              onClick={() => {
+                const uids = (data?.reviews || [])
+                  .filter((r) => !r.response_text && r.status === "PENDING")
+                  .map((r) => r.review_uid);
+                if (uids.length > 0) generateResponses.start(uids);
+              }}
+              disabled={generateResponses.isPending}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              <FiZap size={15} />
+              {generateResponses.isPending && generateResponses.progress
+                ? `Generating ${generateResponses.progress.done} / ${generateResponses.progress.total}…`
+                : "Generate Responses"}
+            </button>
+          </div>
         )}
       </div>
 

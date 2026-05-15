@@ -6,6 +6,7 @@ import {
   useOperatorPerformance,
   useDailyBreakdown,
   useChainBreakdown,
+  useQCMismatches,
   useQCSummary,
 } from "@/hooks/useOperators";
 import type { OperatorPerformance, DailyBreakdown, ChainBreakdown } from "@/lib/types";
@@ -22,6 +23,9 @@ export default function OperatorsPage() {
   const [qcDateFrom, setQcDateFrom] = useState("");
   const [qcDateTo, setQcDateTo] = useState("");
   const { data: qcData } = useQCSummary(qcDateFrom || undefined, qcDateTo || undefined);
+  const { data: mismatchData } = useQCMismatches(qcDateFrom || undefined, qcDateTo || undefined);
+  const [mismatchOperator, setMismatchOperator] = useState("");
+  const [mismatchType, setMismatchType] = useState<"" | "resp" | "disc" | "both">("");
   const [expandedChains, setExpandedChains] = useState<Set<string>>(new Set());
 
   if (!isLead) return <div className="text-gray-400 p-8">Lead access required.</div>;
@@ -198,6 +202,91 @@ export default function OperatorsPage() {
         ) : (
           <p className="text-gray-500 text-sm">No QC data for the selected range.</p>
         )}
+      </div>
+
+      {/* QC Mismatches drilldown */}
+      <div>
+        <h2 className="text-lg font-semibold mb-3">QC Mismatches</h2>
+        <p className="text-sm text-gray-400 mb-3">
+          Reviews where the operator&apos;s response or discount did not match the AI
+          suggestion. Uses the same date filter as Response QC Accuracy above. Use the
+          Search tab with the <code>review_uid</code> to see the full AI response and
+          posted text.
+        </p>
+        <div className="flex gap-4 mb-4 flex-wrap items-end">
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">Operator</label>
+            <select value={mismatchOperator} onChange={(e) => setMismatchOperator(e.target.value)}
+              className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm">
+              <option value="">All Operators</option>
+              {operatorEmails.map((e) => <option key={e} value={e}>{e}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">Mismatch Type</label>
+            <select value={mismatchType}
+              onChange={(e) => setMismatchType(e.target.value as "" | "resp" | "disc" | "both")}
+              className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm">
+              <option value="">Any</option>
+              <option value="resp">Response only</option>
+              <option value="disc">Discount only</option>
+              <option value="both">Both</option>
+            </select>
+          </div>
+        </div>
+        {(() => {
+          const rows = (mismatchData || []).filter((m) => {
+            if (mismatchOperator && m.operator_email !== mismatchOperator) return false;
+            if (mismatchType === "resp" && !(m.resp_mismatch && !m.disc_mismatch)) return false;
+            if (mismatchType === "disc" && !(m.disc_mismatch && !m.resp_mismatch)) return false;
+            if (mismatchType === "both" && !(m.resp_mismatch && m.disc_mismatch)) return false;
+            return true;
+          });
+          if (rows.length === 0) {
+            return <p className="text-gray-500 text-sm">No mismatches for the selected filters.</p>;
+          }
+          return (
+            <div className="overflow-x-auto rounded-lg border border-gray-800">
+              <table className="w-full text-sm">
+                <thead className="bg-[#262730] text-gray-400 sticky top-0">
+                  <tr>
+                    <th className="text-left px-4 py-3">When</th>
+                    <th className="text-left px-4 py-3">Operator</th>
+                    <th className="text-left px-4 py-3">Chain · Platform</th>
+                    <th className="text-left px-4 py-3">Customer</th>
+                    <th className="text-left px-4 py-3">Review UID</th>
+                    <th className="text-left px-4 py-3">Mismatch</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((m, i) => (
+                    <tr key={`${m.review_uid}-${i}`} className="border-t border-gray-800 align-top hover:bg-[#262730]/50">
+                      <td className="px-4 py-3 text-gray-300 whitespace-nowrap">
+                        {new Date(m.responded_at).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">{m.operator_name || m.operator_email}</td>
+                      <td className="px-4 py-3 text-gray-300 whitespace-nowrap">{m.chain_name} · {m.platform}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{m.customer_name || "—"}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <button
+                          onClick={() => navigator.clipboard.writeText(m.review_uid)}
+                          title="Click to copy"
+                          className="font-mono text-xs text-gray-300 hover:text-white px-2 py-1 rounded bg-gray-800/60 hover:bg-gray-700 cursor-pointer"
+                        >
+                          {m.review_uid}
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        {m.resp_mismatch && <span className="inline-block px-2 py-0.5 mr-1 rounded bg-red-900/40 text-red-300 text-xs">resp</span>}
+                        {m.disc_mismatch && <span className="inline-block px-2 py-0.5 rounded bg-orange-900/40 text-orange-300 text-xs">disc</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Date-wise completion */}
