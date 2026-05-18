@@ -5,6 +5,7 @@ Wraps OpenAI calls + PG persistence + config matching.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Optional, Tuple
 
@@ -18,6 +19,7 @@ RESPONSE_PROMPT = """
 You are an AI assistant for a restaurant chain for online orders, responding to customer reviews with a **{tone}** tone. Your response should be natural and **final**, with **no placeholders**.
 
 ### **Review Details**
+- **Platform:** {platform}
 - **Customer Name:** {customer_name}
 - **Review Rating:** {rating_display}
 - **Review Feedback:** {review_text}
@@ -25,12 +27,20 @@ You are an AI assistant for a restaurant chain for online orders, responding to 
 {item_reviews_point}
 {items_point}
 
+### **Platform Vocabulary (CRITICAL)**
+- If Platform is "Doordash", the rating system is **Loved / Liked / Didn't like**.
+  NEVER use the word "star" or "stars" anywhere in the response. Do not say
+  "5-star rating", "thanks for the stars", etc. Refer to the rating only as
+  Loved / Liked / Didn't like, or simply as "your rating" / "your feedback".
+- If Platform is "UberEats", the rating is a star count (1-5). You may use
+  "stars" naturally when referring to it.
+
 ### **Response Guidelines**
 - **DO NOT** ask the customer any questions. This is a one-time reply.
 - **DO NOT** echo or repeat the customer's exact words or phrases.
-- If the review is **positive (4-5 stars, Thumbs Up, or Loved)**: Thank warmly.
-- If the review is **neutral (3 stars, Thumbs Up)**: Acknowledge feedback.
-- If the review is **negative (1-2 stars or Thumbs Down)**: Apologize genuinely.
+- For a **positive** review (Loved, Liked, or 4-5 stars): Thank warmly.
+- For a **neutral** review (3 stars): Acknowledge feedback.
+- For a **negative** review (Didn't like, or 1-2 stars): Apologize genuinely.
 
 ### **Coupon Guidelines**
 - If coupon is "None", "0", "$0", empty, or zero -> DO NOT mention any coupon
@@ -51,17 +61,28 @@ Now, generate a response following these guidelines.
 # ── Rating helpers ───────────────────────────────────────────────────────────
 
 def _rating_display(review: dict) -> str:
+    """
+    Human-readable rating label fed into the LLM prompt.
+
+    DoorDash uses three customer-facing buckets (Loved / Liked / Didn't like).
+    The API still emits legacy 1-5 enums for a small tail of reviews, but the
+    merchant portal collapses everything into those three buckets, so we do
+    too. UberEats genuinely uses 1-5 stars and never sets `rating_value`.
+    """
     platform = review.get("platform", "")
     rating_value = review.get("rating_value")
     star_rating = review.get("star_rating")
     if platform == "Doordash" and rating_value:
-        mapping = {
-            "RATING_VALUE_THUMBS_DOWN": "Thumbs Down",
-            "RATING_VALUE_THUMBS_UP": "Thumbs Up",
-            "RATING_VALUE_LOVED": "Loved",
-            "RATING_VALUE_FIVE": "5 stars",
-        }
-        return mapping.get(rating_value, rating_value)
+        return {
+            "RATING_VALUE_LOVED":       "Loved",
+            "RATING_VALUE_FIVE":        "Loved",
+            "RATING_VALUE_THUMBS_UP":   "Liked",
+            "RATING_VALUE_FOUR":        "Liked",
+            "RATING_VALUE_THREE":       "Didn't like",
+            "RATING_VALUE_TWO":         "Didn't like",
+            "RATING_VALUE_ONE":         "Didn't like",
+            "RATING_VALUE_THUMBS_DOWN": "Didn't like",
+        }.get(rating_value, rating_value)
     if star_rating is not None:
         try:
             sr = int(float(star_rating))
@@ -77,9 +98,11 @@ def _sentiment(review: dict) -> str:
     rating_value = review.get("rating_value")
     star_rating = review.get("star_rating")
     if platform == "Doordash" and rating_value:
-        if rating_value == "RATING_VALUE_THUMBS_DOWN":
+        if rating_value in ("RATING_VALUE_THUMBS_DOWN",
+                            "RATING_VALUE_ONE", "RATING_VALUE_TWO"):
             return "negative"
-        if rating_value == "RATING_VALUE_THUMBS_UP":
+        if rating_value in ("RATING_VALUE_THUMBS_UP", "RATING_VALUE_THREE",
+                            "RATING_VALUE_FOUR"):
             return "neutral"
         if rating_value in ("RATING_VALUE_LOVED", "RATING_VALUE_FIVE"):
             return "positive"
@@ -155,6 +178,9 @@ def _validate(response: str, review: dict, coupon: str) -> Optional[str]:
     if coupon and coupon not in ("None", "0"):
         if response and f"${coupon}" not in response:
             errors.append(f"Coupon value ${coupon} not found in response")
+    if review.get("platform") == "Doordash" and response:
+        if re.search(r"\bstars?\b", response, re.IGNORECASE):
+            errors.append("DoorDash response mentions 'star' — disallowed")
     return "|".join(errors) if errors else None
 
 
@@ -175,6 +201,7 @@ def _call_openai(review: dict, config: dict, coupon_value: float) -> Tuple[str, 
         item_reviews_point = f"- **Item Reviews:** {review.get('item_reviews', '')}"
 
     prompt = RESPONSE_PROMPT.format(
+        platform=review.get("platform", "Unknown"),
         tone=tone, customer_name=review.get("customer_name", "Customer"),
         rating_display=rating_display, review_text=review.get("review_text", ""),
         coupon=coupon_str, item_reviews_point=item_reviews_point,
