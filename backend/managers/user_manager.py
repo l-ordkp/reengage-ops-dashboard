@@ -36,13 +36,25 @@ def set_approval(email: str, approved: bool) -> None:
     update_approval(email, approved)
 
 
-def remove_user(email: str) -> None:
-    """Redistribute pending assignments to other operators, then delete the user."""
+def remove_user(email: str, performed_by: str) -> None:
+    """
+    Redistribute pending assignments to other operators, delete the user,
+    and write an audit row to ops_log so the redistribution is traceable.
+    """
     from backend.repositories.assignment_repository import (
         redistribute_assignments_for_removed_operator,
     )
-    redistribute_assignments_for_removed_operator(email)
+    from backend.repositories.ops_log_repository import log_action
+
+    n_redistributed = redistribute_assignments_for_removed_operator(email)
     repo_delete_user(email)
+    log_action(
+        review_uid="batch", platform="all", chain_name="all",
+        action="user_removed",
+        operator_email=email,
+        performed_by=performed_by,
+        remarks=f"Redistributed {n_redistributed} pending reviews after user removal",
+    )
 
 
 def backfill_name(email: str, name: str) -> None:

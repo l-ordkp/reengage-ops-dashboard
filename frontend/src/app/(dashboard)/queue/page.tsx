@@ -27,9 +27,9 @@ export default function QueuePage() {
   const myChains = [...new Set(reviews.map((r) => r.chain_name))].sort();
   const myPlatforms = [...new Set(reviews.map((r) => r.platform))].sort();
 
+  // Metric-card counts describe the whole queue, so use the pre-filter array.
   const pendingCount = reviews.filter((r) => r.status === "PENDING").length;
   const criticalCount = reviews.filter((r) => r.priority === "CRITICAL").length;
-  const missingAI = reviews.filter((r) => !r.response_text && r.status === "PENDING").length;
 
   function handleFilterChange(key: string, value: string) {
     setFilters((prev) => ({ ...prev, [key]: value }));
@@ -42,6 +42,10 @@ export default function QueuePage() {
   if (filters.status) reviews = reviews.filter((r) => r.status === filters.status);
   if (filters.has_response === "true") reviews = reviews.filter((r) => r.response_text);
   if (filters.has_response === "false") reviews = reviews.filter((r) => !r.response_text);
+
+  // Generate button targets only what's currently visible after filters apply,
+  // so picking a chain lets the operator scope a small fast batch.
+  const missingAI = reviews.filter((r) => !r.response_text && r.status === "PENDING").length;
 
 
   return (
@@ -106,7 +110,7 @@ export default function QueuePage() {
             )}
             <button
               onClick={() => {
-                const uids = (data?.reviews || [])
+                const uids = reviews
                   .filter((r) => !r.response_text && r.status === "PENDING")
                   .map((r) => r.review_uid);
                 if (uids.length > 0) generateResponses.start(uids);
@@ -117,7 +121,7 @@ export default function QueuePage() {
               <FiZap size={15} />
               {generateResponses.isPending && generateResponses.progress
                 ? `Generating ${generateResponses.progress.done} / ${generateResponses.progress.total}…`
-                : "Generate Responses"}
+                : `Generate Responses (${missingAI})`}
             </button>
           </div>
         )}

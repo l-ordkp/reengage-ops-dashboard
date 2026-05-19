@@ -20,6 +20,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { useAuth } from "@/providers/AuthProvider";
+import { useGenerateResponses } from "@/providers/GenerateResponsesProvider";
 import { ROLE_LABELS } from "@/lib/constants";
 
 interface NavItem {
@@ -52,6 +53,7 @@ const managerItems: NavItem[] = [
 export default function Sidebar() {
   const pathname = usePathname();
   const { user, isLead, isManager, logout } = useAuth();
+  const generateResponses = useGenerateResponses();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const queryClient = useQueryClient();
@@ -108,6 +110,21 @@ export default function Sidebar() {
           </>
         )}
       </nav>
+
+      {/* Generation status pill — visible from any dashboard page while a batch runs */}
+      {generateResponses.isPending && generateResponses.progress && (
+        <div className="mx-3 mb-3 px-3 py-2 rounded-lg bg-blue-900/30 border border-blue-800/50">
+          <p className="text-xs text-blue-300 font-medium">
+            Generating {generateResponses.progress.done} / {generateResponses.progress.total}
+          </p>
+          <button
+            onClick={() => generateResponses.cancel()}
+            className="text-xs text-gray-400 hover:text-red-400 mt-1 cursor-pointer"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
 
       {/* User info */}
       {user && (

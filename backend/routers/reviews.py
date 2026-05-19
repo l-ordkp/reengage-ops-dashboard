@@ -116,4 +116,30 @@ def generate_batch(body: GenerateBatchBody, user: dict = Depends(get_current_use
     with ThreadPoolExecutor(max_workers=5) as pool:
         list(pool.map(process_uid, body.review_uids))
 
+    # Audit trail: one ops_log row per chunk, summarising who did what.
+    # Surface chain/platform when the chunk is uniform (common after chain-scoped
+    # generate); otherwise mark "all" so downstream filters still work.
+    from backend.repositories.ops_log_repository import log_action
+
+    chunk_uids = set(body.review_uids)
+    chunk_rows = df[df["review_uid"].isin(chunk_uids)]
+    unique_chains = chunk_rows["chain_name"].dropna().unique().tolist() if not chunk_rows.empty else []
+    unique_platforms = chunk_rows["platform"].dropna().unique().tolist() if not chunk_rows.empty else []
+    chain_label = unique_chains[0] if len(unique_chains) == 1 else "all"
+    platform_label = unique_platforms[0] if len(unique_platforms) == 1 else "all"
+
+    force_flag = " force" if body.force else ""
+    log_action(
+        review_uid="batch",
+        platform=platform_label,
+        chain_name=chain_label,
+        action="generate_batch",
+        operator_email=user["email"],
+        performed_by=user["email"],
+        remarks=(
+            f"requested={len(body.review_uids)} success={results['success']} "
+            f"skipped={results['skipped']} failed={results['failed']}{force_flag}"
+        ),
+    )
+
     return results

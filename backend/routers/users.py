@@ -37,5 +37,5 @@ def update_approval_endpoint(email: str, body: UpdateApprovalBody, user: dict = 
 
 @router.delete("/{email}")
 def delete_endpoint(email: str, user: dict = Depends(require_lead)):
-    remove_user(email)
+    remove_user(email, performed_by=user["email"])
     return {"ok": True}
