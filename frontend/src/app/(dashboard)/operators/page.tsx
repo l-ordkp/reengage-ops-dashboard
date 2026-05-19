@@ -1,15 +1,18 @@
 "use client";
 
 import { useState } from "react";
+import { format } from "date-fns";
+import PortalLoginLink from "@/components/shared/PortalLoginLink";
 import { useAuth } from "@/providers/AuthProvider";
 import {
   useOperatorPerformance,
   useDailyBreakdown,
-  useChainBreakdown,
+  useOperatorQueue,
   useQCMismatches,
   useQCSummary,
 } from "@/hooks/useOperators";
-import type { OperatorPerformance, DailyBreakdown, ChainBreakdown } from "@/lib/types";
+import type { OperatorPerformance, DailyBreakdown, Review } from "@/lib/types";
+import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON } from "@/lib/constants";
 
 export default function OperatorsPage() {
   const { isLead } = useAuth();
@@ -19,7 +22,7 @@ export default function OperatorsPage() {
   const [dailyOperatorFilter, setDailyOperatorFilter] = useState("");
   const { data: dailyData } = useDailyBreakdown(dateFrom || undefined, dateTo || undefined);
   const [selectedChainOp, setSelectedChainOp] = useState("");
-  const { data: chainData } = useChainBreakdown(selectedChainOp || undefined);
+  const { data: operatorQueue, isLoading: queueLoading } = useOperatorQueue(selectedChainOp || undefined);
   const [qcDateFrom, setQcDateFrom] = useState("");
   const [qcDateTo, setQcDateTo] = useState("");
   const { data: qcData } = useQCSummary(qcDateFrom || undefined, qcDateTo || undefined);
@@ -32,7 +35,7 @@ export default function OperatorsPage() {
 
   const perf: OperatorPerformance[] = perfData || [];
   const daily: DailyBreakdown[] = dailyData || [];
-  const chains: ChainBreakdown[] = chainData || [];
+  const operatorReviews: Review[] = operatorQueue?.reviews || [];
 
   const totalAssigned = perf.reduce((s, p) => s + p.total_assigned, 0);
   const totalCompleted = perf.reduce((s, p) => s + p.completed, 0);
@@ -50,12 +53,14 @@ export default function OperatorsPage() {
     });
   }
 
-  // Group chains by chain_name for collapse
-  const chainGroups: Record<string, ChainBreakdown[]> = {};
-  chains.forEach((c) => {
-    if (!chainGroups[c.chain_name]) chainGroups[c.chain_name] = [];
-    chainGroups[c.chain_name].push(c);
+  // Group operator's pending reviews by chain
+  const reviewsByChain: Record<string, Review[]> = {};
+  operatorReviews.forEach((r) => {
+    if (!reviewsByChain[r.chain_name]) reviewsByChain[r.chain_name] = [];
+    reviewsByChain[r.chain_name].push(r);
   });
+  // Sort chain names alphabetically for stable rendering
+  const sortedChainNames = Object.keys(reviewsByChain).sort();
 
 
   return (
@@ -363,58 +368,107 @@ export default function OperatorsPage() {
         )}
       </div>
 
-      {/* Chain breakdown */}
+      {/* Chain x Platform breakdown — actual reviews from the operator's pending queue */}
       <div>
         <h2 className="text-lg font-semibold mb-3">Chain x Platform Breakdown</h2>
+        <p className="text-sm text-gray-400 mb-3">
+          The operator&apos;s current pending assignments, grouped by chain. Shows the same review
+          detail as their My Queue view.
+        </p>
         <select value={selectedChainOp} onChange={(e) => setSelectedChainOp(e.target.value)}
           className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm mb-4">
           <option value="">Select operator</option>
           {operatorEmails.map((e) => <option key={e} value={e}>{e}</option>)}
         </select>
-        {Object.entries(chainGroups).map(([chainName, items]) => {
-          const total = items.reduce((s, c) => s + c.assigned, 0);
-          const done = items.reduce((s, c) => s + c.completed, 0);
-          const missed = items.reduce((s, c) => s + c.expired, 0);
-          const pend = items.reduce((s, c) => s + c.pending, 0);
-          const rate = done + missed > 0 ? (done / (done + missed) * 100) : 0;
-          const key = `chain-${chainName}`;
-          const open = expandedChains.has(key);
-          return (
-            <div key={chainName} className="mb-2">
-              <button onClick={() => toggleChain(key)}
-                className="w-full flex items-center justify-between bg-[#262730] rounded-lg px-4 py-3 text-sm hover:bg-[#2f303a] cursor-pointer">
-                <span className="font-medium">{chainName} — {total} assigned, {done} done, {missed} missed, {pend} pending ({rate.toFixed(0)}%)</span>
-                <span className="text-gray-400">{open ? "▼" : "▶"}</span>
-              </button>
-              {open && (
-                <div className="ml-4 mt-1 rounded-lg border border-gray-800 overflow-hidden">
-                  <table className="w-full text-sm">
-                    <thead className="bg-[#262730] text-gray-400">
-                      <tr>
-                        <th className="text-left px-4 py-2">Platform</th>
-                        <th className="px-4 py-2 text-right">Assigned</th>
-                        <th className="px-4 py-2 text-right">Completed</th>
-                        <th className="px-4 py-2 text-right">Expired</th>
-                        <th className="px-4 py-2 text-right">Pending</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {items.map((c, i) => (
-                        <tr key={i} className="border-t border-gray-800">
-                          <td className="px-4 py-2">{c.platform}</td>
-                          <td className="px-4 py-2 text-right">{c.assigned}</td>
-                          <td className="px-4 py-2 text-right text-green-400">{c.completed}</td>
-                          <td className="px-4 py-2 text-right text-red-400">{c.expired}</td>
-                          <td className="px-4 py-2 text-right text-yellow-400">{c.pending}</td>
+        {!selectedChainOp ? (
+          <p className="text-gray-500 text-sm">Pick an operator to see their pending reviews.</p>
+        ) : queueLoading ? (
+          <div className="animate-pulse bg-[#262730] rounded-lg h-32" />
+        ) : sortedChainNames.length === 0 ? (
+          <p className="text-gray-500 text-sm">No pending reviews for this operator.</p>
+        ) : (
+          sortedChainNames.map((chainName) => {
+            const reviews = reviewsByChain[chainName];
+            const critical = reviews.filter((r) => r.priority === "CRITICAL").length;
+            const platforms = [...new Set(reviews.map((r) => r.platform))].sort().join(" · ");
+            const key = `chain-${chainName}`;
+            const open = expandedChains.has(key);
+            return (
+              <div key={chainName} className="mb-2">
+                <button onClick={() => toggleChain(key)}
+                  className="w-full flex items-center justify-between bg-[#262730] rounded-lg px-4 py-3 text-sm hover:bg-[#2f303a] cursor-pointer">
+                  <span className="font-medium">
+                    {chainName} — {reviews.length} pending ({platforms})
+                    {critical > 0 && <span className="ml-2 text-red-400">· {critical} critical</span>}
+                  </span>
+                  <span className="text-gray-400">{open ? "▼" : "▶"}</span>
+                </button>
+                {open && (
+                  <div className="ml-4 mt-1 rounded-lg border border-gray-800 overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-[#262730] text-gray-400">
+                        <tr>
+                          <th className="text-left px-3 py-2">Priority</th>
+                          <th className="text-left px-3 py-2">Status</th>
+                          <th className="text-left px-3 py-2">Days Left</th>
+                          <th className="text-left px-3 py-2">Platform</th>
+                          <th className="text-left px-3 py-2">Customer</th>
+                          <th className="text-left px-3 py-2">Rating</th>
+                          <th className="text-left px-3 py-2 min-w-[200px]">Review</th>
+                          <th className="text-left px-3 py-2 min-w-[200px]">AI Response</th>
+                          <th className="text-left px-3 py-2">Date</th>
+                          <th className="text-left px-3 py-2">Portal</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          );
-        })}
+                      </thead>
+                      <tbody>
+                        {reviews.map((r) => (
+                          <tr key={r.review_uid} className="border-t border-gray-800 align-top hover:bg-gray-800/40">
+                            <td className="px-3 py-2 whitespace-nowrap">
+                              <span className={`font-semibold ${PRIORITY_COLOR[r.priority] || "text-gray-400"}`}>
+                                {PRIORITY_ICON[r.priority]} {r.priority}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 whitespace-nowrap">
+                              <span className={STATUS_COLOR[r.status] || "text-gray-400"}>
+                                {STATUS_ICON[r.status]} {r.status}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 whitespace-nowrap">
+                              <span className={r.days_left <= 1 ? "text-red-400 font-semibold" : "text-gray-300"}>
+                                {r.days_left}d
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-gray-300 capitalize whitespace-nowrap">{r.platform}</td>
+                            <td className="px-3 py-2 text-gray-300 whitespace-nowrap">{r.customer_name}</td>
+                            <td className="px-3 py-2 text-yellow-400 whitespace-nowrap">
+                              {r.rating_display || r.star_rating}
+                            </td>
+                            <td className="px-3 py-2 text-gray-300 max-w-[260px]">
+                              <span className="line-clamp-2" title={r.review_text}>{r.review_text || "—"}</span>
+                            </td>
+                            <td className="px-3 py-2 max-w-[260px]">
+                              {r.response_text ? (
+                                <span className="line-clamp-2 text-green-300" title={r.response_text}>{r.response_text}</span>
+                              ) : (
+                                <span className="text-gray-600 italic">No response</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-gray-400 whitespace-nowrap">
+                              {r.review_date ? format(new Date(r.review_date), "MMM dd") : "—"}
+                            </td>
+                            <td className="px-3 py-2">
+                              <PortalLoginLink review={r} />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
       </div>
 
     </div>

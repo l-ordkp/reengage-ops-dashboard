@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
-import type { OperatorPerformance, DailyBreakdown, ChainBreakdown, Review } from "@/lib/types";
+import type { OperatorPerformance, DailyBreakdown, ChainBreakdown, Review, Assignment } from "@/lib/types";
 
 export function useOperatorPerformance() {
   return useQuery<OperatorPerformance[]>({
@@ -40,8 +40,8 @@ export function useChainBreakdown(email?: string) {
 }
 
 interface OperatorQueueResponse {
+  assignments: Assignment[];
   reviews: Review[];
-  combos: { chain_name: string; platform: string; count: number; critical: number; min_days: number }[];
 }
 
 interface QCSummary {

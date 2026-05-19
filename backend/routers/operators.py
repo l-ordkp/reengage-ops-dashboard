@@ -10,6 +10,7 @@ from backend.managers.operator_manager import (
     get_chain_breakdown, get_daily_breakdown, get_performance,
     get_qc_mismatches, get_qc_summary,
 )
+from backend.managers.queue_manager import get_my_queue
 
 router = APIRouter(prefix="/api/operators", tags=["operators"])
 
@@ -49,3 +50,9 @@ def qc_mismatches(
     user: dict = Depends(require_lead),
 ):
     return get_qc_mismatches(date_from, date_to)
+
+
+@router.get("/{email}/queue")
+def operator_queue(email: str, user: dict = Depends(require_lead)):
+    """Pending-assignment review list for any operator (lead/manager only)."""
+    return get_my_queue(email)
