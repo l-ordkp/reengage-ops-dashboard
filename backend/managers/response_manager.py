@@ -46,6 +46,21 @@ You are an AI assistant for a restaurant chain for online orders, responding to 
 - If coupon is "None", "0", "$0", empty, or zero -> DO NOT mention any coupon
 - If coupon is a positive number -> YOU MUST include it naturally
 
+### **Item Reference Guidelines**
+- When Review Feedback is empty AND Item Ordered is provided, you MUST
+  reference the food category in your reply (do not fall back to generic
+  "your meal" / "your order" in this case — the category is the only signal
+  available to make the reply feel personal).
+- When Review Feedback is present, referencing the order is optional —
+  prioritise responding to the customer's words.
+- NEVER quote exact item names, sizes, modifiers, or combos verbatim.
+  Generalise to a short food category that captures the order
+  (e.g. "burger meal", "pizza", "wings", "bowl", "sandwich", "tacos",
+  "your sides"). Pick the most representative category.
+- If the items don't map cleanly to one category, fall back to neutral
+  phrasing like "your meal" or "your order" — never list items.
+- If no items are provided, do not invent any.
+
 ### **Critical Name Requirement**
 - MUST include the exact customer name "{customer_name}" in your response.
 
@@ -196,9 +211,10 @@ def _call_openai(review: dict, config: dict, coupon_value: float) -> Tuple[str, 
 
     items_point = ""
     item_reviews_point = ""
-    if review.get("items") and review.get("item_reviews"):
-        items_point = f"- **Item Ordered:** {review.get('items', '')}"
-        item_reviews_point = f"- **Item Reviews:** {review.get('item_reviews', '')}"
+    if review.get("items"):
+        items_point = f"- **Item Ordered:** {review.get('items')}"
+    if review.get("item_reviews"):
+        item_reviews_point = f"- **Item Reviews:** {review.get('item_reviews')}"
 
     prompt = RESPONSE_PROMPT.format(
         platform=review.get("platform", "Unknown"),
