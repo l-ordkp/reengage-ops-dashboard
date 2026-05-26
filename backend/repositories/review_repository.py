@@ -77,6 +77,18 @@ def fetch_reviews_14d() -> pd.DataFrame:
                     OR CAST(automation_review.star_rating AS STRING) IN UNNEST(JSON_VALUE_ARRAY(response_config.ratings))
                     OR automation_review.rating_value IN UNNEST(JSON_VALUE_ARRAY(response_config.ratings))
                 )
+                AND (
+                    ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(response_config.customer_types), [])) = 0
+                    OR (CASE WHEN SAFE_CAST(automation_review.orders_count AS INT64) > 1
+                             THEN 'existing' ELSE 'new' END)
+                       IN UNNEST(JSON_VALUE_ARRAY(response_config.customer_types))
+                )
+                AND (
+                    ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(response_config.feedback_presence), [])) = 0
+                    OR (CASE WHEN COALESCE(TRIM(automation_review.review_text), '') = ''
+                             THEN 'without_feedback' ELSE 'with_feedback' END)
+                       IN UNNEST(JSON_VALUE_ARRAY(response_config.feedback_presence))
+                )
           )
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY COALESCE(automation_review.review_id, automation_review.order_id)

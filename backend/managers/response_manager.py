@@ -143,7 +143,13 @@ def _tone(sentiment: str, default_tone: str) -> str:
 # ── Config matching ──────────────────────────────────────────────────────────
 
 def find_matching_config(review: dict, configs: list[dict]) -> Optional[dict]:
-    """Pick the best matching response config for a review (most recent that matches all criteria)."""
+    """Pick the best matching response config for a review (most recent that matches all criteria).
+
+    All five filter lists (ratings / vb_platforms / customer_types / feedback_presence)
+    use the same rule: an empty or missing list means "no filter / accept all". This
+    matches the SQL eligibility filter in fetch_reviews_14d so generation can't
+    silently skip an assigned review.
+    """
     star_rating = review.get("star_rating")
     rating_value = review.get("rating_value")
     merchant = review.get("platform")
@@ -155,10 +161,10 @@ def find_matching_config(review: dict, configs: list[dict]) -> Optional[dict]:
     for cfg in configs:
         if cfg.get("paused", False):
             continue
-        feedback_list = cfg.get("feedback_presence", ["with_feedback", "without_feedback"])
-        if feedback_type not in feedback_list:
+        feedback_presence = cfg.get("feedback_presence") or []
+        if feedback_presence and feedback_type not in feedback_presence:
             continue
-        ratings = cfg.get("ratings", [])
+        ratings = cfg.get("ratings") or []
         if ratings:
             rating_matches = False
             if star_rating is not None and str(star_rating) in ratings:
@@ -167,10 +173,10 @@ def find_matching_config(review: dict, configs: list[dict]) -> Optional[dict]:
                 rating_matches = True
             if not rating_matches:
                 continue
-        platforms = cfg.get("vb_platforms", [])
+        platforms = cfg.get("vb_platforms") or []
         if platforms and (merchant is None or merchant not in platforms):
             continue
-        customer_types = cfg.get("customer_types", [])
+        customer_types = cfg.get("customer_types") or []
         if customer_types and (customer_type is None or customer_type not in customer_types):
             continue
         matching.append(cfg)
