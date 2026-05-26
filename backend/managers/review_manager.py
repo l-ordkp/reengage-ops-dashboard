@@ -10,6 +10,7 @@ import pandas as pd
 
 from backend.clients.bq_client import bq_read
 from backend.config import (
+    TABLE_ASSIGNMENTS,
     TABLE_AUTOMATION_REVIEWS,
     TABLE_REVIEW_RESPONSES,
     TABLE_SLUG_AM_MAPPING,
@@ -141,11 +142,17 @@ def search_reviews(
 
 
 def _search_historical_by_id(field: str, query: str) -> pd.DataFrame:
-    """Direct BQ query for historical (up to 90 days) lookup by ID."""
+    """Direct BQ query for historical (up to 90 days) lookup by ID.
+
+    Status and priority are computed from the same rules as fetch_reviews_14d
+    so out-of-scope reviews shown in Search don't get an incorrect blanket
+    "EXPIRED" label.
+    """
     safe_q = query.replace("'", "''")
     id_col = "COALESCE(ar.review_id, ar.order_id)" if field == "review_uid" else f"ar.{field}"
     return bq_read(f"""
-        SELECT
+        WITH base AS (
+          SELECT
             COALESCE(ar.review_id, ar.order_id) AS review_uid,
             ar.order_id, ar.review_id,
             sm.chain AS chain_name, sm.b_name_id, sm.vb_name AS brand_name,
@@ -155,6 +162,17 @@ def _search_historical_by_id(field: str, query: str) -> pd.DataFrame:
             CAST(ar.star_rating AS STRING) AS star_rating,
             ar.rating_type, ar.rating_value, ar.review_text,
             ar.items, ar.order_value, ar.is_replied,
+            -- Derived from our own assignments table (we no longer write to
+            -- automation_reviews.is_loop_replied — see assignment_repository).
+            -- OR-match handles the historical DD complaintId-as-order_id case.
+            EXISTS (
+                SELECT 1
+                FROM `{TABLE_ASSIGNMENTS}` AS asgn
+                WHERE asgn.status = 'completed'
+                  AND (asgn.review_uid = COALESCE(ar.review_id, ar.order_id)
+                       OR asgn.order_id = ar.order_id
+                       OR asgn.order_id = ar.review_id)
+            ) AS is_loop_replied,
             DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')) AS review_date,
             CASE
                 WHEN ar.platform = 'Doordash' THEN
@@ -163,8 +181,6 @@ def _search_historical_by_id(field: str, query: str) -> pd.DataFrame:
                     DATE_DIFF(DATE_ADD(DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')), INTERVAL 14 DAY), CURRENT_DATE('America/Chicago'), DAY)
                 ELSE 0
             END AS days_left,
-            CASE WHEN ar.is_replied = TRUE THEN 'RESPONDED' ELSE 'EXPIRED' END AS status,
-            'NORMAL' AS priority,
             rr.response_text, rr.response_type, rr.coupon_value,
             CASE
                 WHEN ar.platform = 'UberEats' THEN
@@ -173,13 +189,28 @@ def _search_historical_by_id(field: str, query: str) -> pd.DataFrame:
                     CONCAT('https://www.doordash.com/merchant/feedback?store_id=', ar.store_id)
                 ELSE ''
             END AS portal_link
-        FROM `{TABLE_AUTOMATION_REVIEWS}` ar
-        INNER JOIN `{TABLE_SLUG_AM_MAPPING}` sm ON ar.slug = sm.slug
-        LEFT JOIN `{TABLE_REVIEW_RESPONSES}` rr ON ar.order_id = rr.order_id
-        WHERE {id_col} = '{safe_q}'
-          AND COALESCE(ar.review_timestamp, ar.order_timestamp)
-              >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY))
-        LIMIT 10
+          FROM `{TABLE_AUTOMATION_REVIEWS}` ar
+          INNER JOIN `{TABLE_SLUG_AM_MAPPING}` sm ON ar.slug = sm.slug
+          LEFT JOIN `{TABLE_REVIEW_RESPONSES}` rr ON ar.order_id = rr.order_id
+          WHERE {id_col} = '{safe_q}'
+            AND COALESCE(ar.review_timestamp, ar.order_timestamp)
+                >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY))
+          LIMIT 10
+        )
+        SELECT
+            base.*,
+            CASE
+                WHEN is_replied = TRUE THEN 'RESPONDED'
+                WHEN is_loop_replied = TRUE THEN 'RESPONDED'
+                WHEN days_left <= 0 THEN 'EXPIRED'
+                ELSE 'PENDING'
+            END AS status,
+            CASE
+                WHEN days_left <= 1 THEN 'CRITICAL'
+                WHEN days_left = 2 THEN 'URGENT'
+                ELSE 'NORMAL'
+            END AS priority
+        FROM base
     """)
 
 

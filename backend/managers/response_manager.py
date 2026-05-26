@@ -145,11 +145,13 @@ def _tone(sentiment: str, default_tone: str) -> str:
 def find_matching_config(review: dict, configs: list[dict]) -> Optional[dict]:
     """Pick the best matching response config for a review (most recent that matches all criteria).
 
-    All five filter lists (ratings / vb_platforms / customer_types / feedback_presence)
-    use the same rule: an empty or missing list means "no filter / accept all". This
-    matches the SQL eligibility filter in fetch_reviews_14d so generation can't
-    silently skip an assigned review.
+    All six filter dimensions (chain, ratings, vb_platforms, customer_types,
+    feedback_presence, paused) use the same rule across SQL eligibility and
+    Python matching — an empty/missing list means "no filter / accept all".
+    chain_name MUST match exactly; we never let one chain's config respond
+    to another chain's review (was a real bug — see commit history).
     """
+    review_chain = review.get("chain_name")
     star_rating = review.get("star_rating")
     rating_value = review.get("rating_value")
     merchant = review.get("platform")
@@ -160,6 +162,9 @@ def find_matching_config(review: dict, configs: list[dict]) -> Optional[dict]:
     matching = []
     for cfg in configs:
         if cfg.get("paused", False):
+            continue
+        # Chain must match exactly — no cross-tenant matches.
+        if cfg.get("chain_name") != review_chain:
             continue
         feedback_presence = cfg.get("feedback_presence") or []
         if feedback_presence and feedback_type not in feedback_presence:

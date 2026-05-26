@@ -99,22 +99,39 @@ export interface ChainBreakdown {
 }
 
 // ── Chain Health ─────────────────────────────────────────────────────────────
+// Math: total = out_of_scope + pending + responded + expired
+//       loop_responded ⊆ responded  (subset, not part of the partition sum)
 export interface ChainHealth {
   chain_name: string;
-  total: number;
-  responded: number;
-  pending: number;
-  expired: number;
+  total: number;             // all reviews in 14d for this ReEngage chain
+  out_of_scope: number;      // = total - in_scope
+  in_scope: number;          // matches an active config
+  pending: number;           // in-scope, not yet responded, not expired
+  responded: number;         // in-scope, is_replied OR is_loop_replied
+  loop_responded: number;    // in-scope, is_loop_replied (subset of responded)
+  expired: number;           // in-scope, past window, no reply
   critical: number;
   has_response: number;
   avg_rating: number;
   locations: number;
-  response_rate: number;
-  ai_coverage: number;
-  loop_replied?: number;
-  coupons_issued?: number;
-  total_coupon_value?: number;
-  first_loop_replied?: string | null;
+  response_rate: number;     // responded / in_scope
+  ai_coverage: number;       // has_response / in_scope
+  loop_coverage: number;     // loop_responded / in_scope
+}
+
+export interface ChainHealthSummary {
+  total: number;
+  out_of_scope: number;
+  in_scope: number;
+  pending: number;
+  responded: number;
+  loop_responded: number;
+  expired: number;
+}
+
+export interface ChainHealthResponse {
+  summary: ChainHealthSummary;
+  chains: ChainHealth[];
 }
 
 // ── Response Config ─────────────────────────────────────────────────────────

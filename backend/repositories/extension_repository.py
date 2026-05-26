@@ -45,7 +45,25 @@ def lookup_review_uid_by_order(order_id: str) -> str:
     rows = bq_read_dicts(f"""
         SELECT COALESCE(review_id, order_id) AS review_uid
         FROM `{PROJECT}.{TABLE_AUTOMATION_REVIEWS}`
-        WHERE order_id = '{safe_id}'
+        WHERE order_id = '{safe_id}' OR review_id = '{safe_id}'
         LIMIT 1
     """)
     return rows[0]["review_uid"] if rows else order_id
+
+
+def resolve_canonical_order_id(maybe_id: str) -> str | None:
+    """
+    The DoorDash extension passes `complaintId` (= review_id) as the
+    operator's `order_id` in mark_responded. Resolve to the real
+    `automation_reviews.order_id` by matching on either column.
+    Returns None when no automation_review matches (e.g., review aged out
+    or wrong ID entirely).
+    """
+    safe_id = maybe_id.replace("'", "")
+    rows = bq_read_dicts(f"""
+        SELECT order_id
+        FROM `{PROJECT}.{TABLE_AUTOMATION_REVIEWS}`
+        WHERE order_id = '{safe_id}' OR review_id = '{safe_id}'
+        LIMIT 1
+    """)
+    return rows[0]["order_id"] if rows else None

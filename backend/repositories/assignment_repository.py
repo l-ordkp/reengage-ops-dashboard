@@ -96,20 +96,21 @@ def insert_assignments(rows: list[dict]) -> None:
 
 
 def mark_assignment_completed(assignment_id: str) -> None:
-    """Set an assignment to completed and propagate `is_loop_replied=TRUE`."""
+    """Set an assignment to completed in our own table.
+
+    We deliberately do NOT write `is_loop_replied=TRUE` to elt_data.automation_reviews
+    anymore — single-row UPDATEs on that elt-owned table were causing concurrent-
+    update collisions with the dbt MERGE that owns the partition. Loop-replied
+    state is now derived at read time by JOIN'ing automation_reviews to our
+    reengage_dashboard_v2_assignments table on review_uid (see fetch_chain_totals_14d
+    and fetch_reviews_14d).
+    """
     now = _now_str()
     safe_assignment_id = _escape_sql(assignment_id)
     bq_exec(f"""
     UPDATE `{TABLE_ASSIGNMENTS}`
     SET status = 'completed', completed_at = TIMESTAMP('{now}')
     WHERE assignment_id = '{safe_assignment_id}'
-    """)
-    bq_exec(f"""
-    UPDATE `{TABLE_AUTOMATION_REVIEWS}`
-    SET is_loop_replied = TRUE
-    WHERE order_id IN (
-        SELECT order_id FROM `{TABLE_ASSIGNMENTS}` WHERE assignment_id = '{safe_assignment_id}'
-    )
     """)
 
 
@@ -148,13 +149,18 @@ def insert_completed_assignment(
 
 
 def mark_is_loop_replied(order_id: str) -> None:
-    """Set is_loop_replied=TRUE on automation_reviews for a given order."""
-    safe_order_id = _escape_sql(order_id)
-    bq_exec(f"""
-        UPDATE `{TABLE_AUTOMATION_REVIEWS}`
-        SET is_loop_replied = TRUE
-        WHERE order_id = '{safe_order_id}'
-    """)
+    """No-op kept for backward compatibility with extension_manager callers.
+
+    Previously this fired a single-row UPDATE on elt_data.automation_reviews
+    to flip is_loop_replied=TRUE. That table is dbt-owned and our UPDATEs
+    were colliding with the dbt MERGE (concurrent-update self-failures up to
+    46% over the last 50 runs, breaking ClickHouse ingestion). Loop-replied
+    status is now derived at read time from reengage_dashboard_v2_assignments
+    (a Loop reply ⇔ an assignment row with status='completed' for that
+    review_uid). We keep the function as a no-op so we don't break callers
+    in the middle of a deploy.
+    """
+    _ = order_id  # intentionally unused
 
 
 def expire_stale_assignments() -> None:

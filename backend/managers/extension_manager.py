@@ -19,6 +19,7 @@ from backend.repositories.extension_repository import (
     is_operator_approved,
     lookup_response_by_order,
     lookup_review_uid_by_order,
+    resolve_canonical_order_id,
 )
 from backend.repositories.ops_log_repository import log_action
 
@@ -76,6 +77,13 @@ def mark_responded(
     if not UUID_RE.match(order_id):
         raise HTTPException(status_code=400, detail="Invalid order_id")
 
+    # DoorDash extension passes `complaintId` (= review_id) as `order_id`.
+    # Resolve to the canonical automation_reviews.order_id so downstream
+    # updates (mark_is_loop_replied / assignment lookup) actually match.
+    canonical_order_id = resolve_canonical_order_id(order_id)
+    if canonical_order_id:
+        order_id = canonical_order_id
+
     review_uid = lookup_review_uid_by_order(order_id)
 
     platform_short = "extension_ue" if "uber" in platform.lower() else "extension_dd"
@@ -96,7 +104,11 @@ def mark_responded(
         remarks=qc_info,
     )
 
-    # Update or insert the assignment row
+    # Update or insert the assignment row. assignment_status='completed' is
+    # now the canonical signal that Loop replied — Chain Health and the
+    # status field on fetch_reviews_14d both derive is_loop_replied from
+    # this. We no longer write back to elt_data.automation_reviews (that
+    # was breaking dbt's MERGE).
     existing = fetch_assignment_by_order_id(order_id)
     if not existing.empty:
         update_assignment_by_order_id(order_id)
@@ -105,8 +117,6 @@ def mark_responded(
             review_uid=review_uid, order_id=order_id, operator_email=operator_email,
             chain_name=chain_name, platform=platform,
         )
-
-    mark_is_loop_replied(order_id)
 
     return {
         "success": True,

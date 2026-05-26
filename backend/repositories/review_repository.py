@@ -178,7 +178,13 @@ def fetch_reviews_14d() -> pd.DataFrame:
         rating_numeric, rating_display, review_text, items, order_value,
         review_date, days_left,
         portal_link, response_text, ai_response_type AS response_type, coupon_value,
-        CAST(config_id AS STRING) AS config_id, status, priority, is_replied,
+        CAST(config_id AS STRING) AS config_id, status, priority,
+        is_replied,
+        -- Derive is_loop_replied from our own assignments table instead of
+        -- reading the now-stale automation_reviews flag (we no longer write
+        -- to that column).  assignment_status='completed' is set by both the
+        -- extension flow and the routers/assignments mark-completed endpoint.
+        (assignment_status = 'completed') AS is_loop_replied,
         portal_username, portal_password
     FROM reviews_with_status
     ORDER BY
@@ -186,3 +192,58 @@ def fetch_reviews_14d() -> pd.DataFrame:
         days_left ASC, chain_name, platform, slug
     """
     return bq_read(sql)
+
+
+@cached(ttl=300)
+def fetch_chain_totals_14d() -> pd.DataFrame:
+    """
+    Per-chain totals over the last 14 days, restricted to chains ReEngage
+    actually manages (= at least one non-paused row in review_response_config).
+    Used by Chain Health for the top-level summary cards.
+
+    `loop_responded` is derived from our own reengage_dashboard_v2_assignments
+    table (a Loop reply ⇔ an assignment row with status='completed' for that
+    review). We do NOT read `automation_reviews.is_loop_replied` anymore —
+    we stopped writing to it to avoid colliding with the dbt MERGE.
+
+    `responded` counts a review as replied if either the platform has confirmed
+    it (`is_replied`) OR our assignments table has a completed row for it.
+    Matching on (order_id OR review_id) also catches the historical DoorDash
+    rows where the extension passed `complaintId` (= review_id) as `order_id`.
+    """
+    from backend.config import TABLE_ASSIGNMENTS
+    return bq_read(f"""
+        WITH loop_completed AS (
+            SELECT DISTINCT order_id AS completed_id
+            FROM `{TABLE_ASSIGNMENTS}`
+            WHERE status = 'completed'
+        )
+        SELECT
+            slug_mapping.chain AS chain_name,
+            COUNT(*) AS total,
+            COUNTIF(
+                automation_review.is_replied = TRUE
+                OR lc_oid.completed_id IS NOT NULL
+                OR lc_rid.completed_id IS NOT NULL
+            ) AS responded,
+            COUNTIF(
+                lc_oid.completed_id IS NOT NULL
+                OR lc_rid.completed_id IS NOT NULL
+            ) AS loop_responded
+        FROM `{TABLE_AUTOMATION_REVIEWS}` AS automation_review
+        INNER JOIN `{TABLE_SLUG_AM_MAPPING}` AS slug_mapping
+            ON automation_review.slug = slug_mapping.slug
+        LEFT JOIN loop_completed AS lc_oid
+            ON lc_oid.completed_id = automation_review.order_id
+        LEFT JOIN loop_completed AS lc_rid
+            ON lc_rid.completed_id = automation_review.review_id
+        WHERE COALESCE(automation_review.review_timestamp, automation_review.order_timestamp)
+              >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
+          AND EXISTS (
+              SELECT 1
+              FROM `{TABLE_REVIEW_RESPONSE_CFG}` AS response_config
+              WHERE response_config.paused = FALSE
+                AND response_config.chain_name = slug_mapping.chain
+          )
+        GROUP BY 1
+    """)

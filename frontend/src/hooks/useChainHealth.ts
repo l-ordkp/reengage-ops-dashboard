@@ -2,10 +2,10 @@
 
 import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
-import type { ChainHealth } from "@/lib/types";
+import type { ChainHealthResponse } from "@/lib/types";
 
 export function useChainHealth() {
-  return useQuery<ChainHealth[]>({
+  return useQuery<ChainHealthResponse>({
     queryKey: ["chain-health"],
     queryFn: async () => {
       const { data } = await api.get("/api/chain-health");
