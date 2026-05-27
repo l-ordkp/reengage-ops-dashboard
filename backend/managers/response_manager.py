@@ -44,7 +44,7 @@ You are an AI assistant for a restaurant chain for online orders, responding to 
 
 ### **Coupon Guidelines**
 - If coupon is "None", "0", "$0", empty, or zero -> DO NOT mention any coupon
-- If coupon is a positive number -> YOU MUST include it naturally
+- **If coupon is a positive number -> YOU MUST include it naturally in your response**
 
 ### **Item Reference Guidelines**
 - When Review Feedback is empty AND Item Ordered is provided, you MUST
@@ -68,6 +68,9 @@ You are an AI assistant for a restaurant chain for online orders, responding to 
 - Response MUST be within **{char_limit} characters**.
 - Keep it concise but meaningful.
 - Ensure the response is final and requires no manual edits.
+
+### **Final Reminder Before You Reply**
+**If coupon is a positive number -> YOU MUST include it naturally in your response.**
 
 Now, generate a response following these guidelines.
 """
@@ -258,9 +261,11 @@ def generate_and_save(review: dict, config: dict) -> dict:
     platform_config = platform_configs.get(platform, {})
 
     if platform_config and platform_config.get("coupon_type"):
+        # DB stores the type as lowercase ("fixed") today; .upper() makes us
+        # tolerant of either casing in case the config UI ever writes "FIXED".
         coupon_value = (
             platform_config.get("fixed_value", 0.0)
-            if platform_config["coupon_type"] == "FIXED"
+            if platform_config["coupon_type"].upper() == "FIXED"
             else platform_config.get("percentage_value", 0.0)
         )
     else:
