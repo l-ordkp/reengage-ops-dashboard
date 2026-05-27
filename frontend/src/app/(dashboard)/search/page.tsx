@@ -6,7 +6,7 @@ import PortalLoginLink from "@/components/shared/PortalLoginLink";
 import { useAuth } from "@/providers/AuthProvider";
 import { useReviewFilters } from "@/hooks/useReviews";
 import api from "@/lib/api";
-import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON, formatHoursLeft } from "@/lib/constants";
+import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON, formatHoursLeft, formatIST, formatReviewDate } from "@/lib/constants";
 import type { Review } from "@/lib/types";
 
 type SearchMode = "by_id" | "by_customer";
@@ -180,7 +180,7 @@ export default function SearchPage() {
                 <InfoField label="Customer" value={r.customer_name} />
                 <InfoField label="Customer ID" value={r.customer_id} />
                 <InfoField label="Type" value={r.customer_type} />
-                <InfoField label="Date" value={r.review_date ? String(r.review_date) : null} />
+                <InfoField label="Review Date" value={formatReviewDate(r.review_date ? String(r.review_date) : null)} />
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm mb-3">
                 <InfoField label="Order ID" value={r.order_id} mono copyable />
@@ -191,7 +191,8 @@ export default function SearchPage() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm mb-3">
                 <InfoField label="Last Assigned To" value={(r as any).assigned_to || "Unassigned"} />
                 <InfoField label="Assignment Status" value={(r as any).assignment_status || null} />
-                <InfoField label="Assigned At" value={(r as any).assigned_at ? String((r as any).assigned_at).slice(0, 16) : null} />
+                <InfoField label="Assigned At" value={formatIST((r as any).assigned_at)} />
+                <InfoField label="Replied At" value={formatIST((r as any).completed_at)} />
                 {(r as any).qc_response_match !== undefined && (
                   <InfoField label="Response Match" value={(r as any).qc_response_match ? "✅ Exact" : "⚠️ Mismatch"} />
                 )}

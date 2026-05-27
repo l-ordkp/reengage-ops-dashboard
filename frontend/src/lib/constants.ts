@@ -29,6 +29,43 @@ export const ROLE_LABELS: Record<string, string> = {
   new_operator: "New Operator",
 };
 
+// All timestamps stored server-side are in UTC. Operators are in India, so
+// for any concrete timestamp we display we convert to IST and label it,
+// rather than relying on the viewer's browser timezone (which differs
+// between an IST operator and a US-based lead and would give them
+// different strings for the same row).
+export function formatIST(iso: string | Date | null | undefined): string {
+  if (!iso) return "—";
+  const d = typeof iso === "string" ? new Date(iso) : iso;
+  if (isNaN(d.getTime())) return "—";
+  return (
+    d.toLocaleString("en-US", {
+      timeZone: "Asia/Kolkata",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }) + " IST"
+  );
+}
+
+// review_date is a date-only string in the restaurant's local market (US/CT),
+// because the underlying review was posted by a US customer. Don't convert
+// it — just label so an IST viewer doesn't mis-read it as their own date.
+export function formatReviewDate(dateStr: string | null | undefined): string {
+  if (!dateStr) return "—";
+  const d = new Date(dateStr + "T00:00:00Z");
+  if (isNaN(d.getTime())) return "—";
+  const label = d.toLocaleDateString("en-US", {
+    timeZone: "UTC",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  return `${label} (US/CT)`;
+}
+
 // "Time left until platform deadline" formatter.
 //   <= 0  : "Expired"
 //   < 24h : "Nh"           (e.g., "7h")

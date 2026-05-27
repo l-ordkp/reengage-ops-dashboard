@@ -1,7 +1,7 @@
 "use client";
 
-import { format } from "date-fns";
 import { useOpsLog } from "@/hooks/useOpsLog";
+import { formatIST } from "@/lib/constants";
 
 export default function OpsLogPage() {
   const { data: entries, isLoading } = useOpsLog();
@@ -17,7 +17,7 @@ export default function OpsLogPage() {
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-gray-900 z-10">
             <tr className="border-b border-gray-800 text-left text-gray-400">
-              <th className="px-4 py-3 font-medium">Timestamp</th>
+              <th className="px-4 py-3 font-medium" title="Audit-log timestamp, shown in IST">Timestamp (IST)</th>
               <th className="px-4 py-3 font-medium">Action</th>
               <th className="px-4 py-3 font-medium">Review UID</th>
               <th className="px-4 py-3 font-medium">Platform</th>
@@ -43,9 +43,7 @@ export default function OpsLogPage() {
                   className="border-b border-gray-800/50 hover:bg-gray-800/50 transition-colors"
                 >
                   <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
-                    {e.processing_timestamp
-                      ? format(new Date(e.processing_timestamp), "yyyy-MM-dd HH:mm")
-                      : "-"}
+                    {formatIST(e.processing_timestamp)}
                   </td>
                   <td className="px-4 py-3">
                     <ActionBadge action={e.action} />

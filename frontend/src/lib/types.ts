@@ -20,9 +20,14 @@ export interface Review {
   review_text: string;
   items: string;
   order_value: number;
-  review_date: string;
+  review_date: string;       // date-only, in restaurant local time (US/CT)
   hours_left: number;
   portal_link: string;
+  // Populated by search/queue enrichment. ISO string in UTC; render with formatIST().
+  completed_at?: string | null;
+  assigned_at?: string | null;
+  assigned_to?: string | null;
+  assignment_status?: string | null;
   response_text: string | null;
   response_type: string | null;
   coupon_value: number | null;

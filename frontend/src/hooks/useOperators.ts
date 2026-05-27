@@ -94,6 +94,21 @@ export function useQCSummary(dateFrom?: string, dateTo?: string) {
   });
 }
 
+export interface DailyLoopCompleted {
+  date: string;
+  loop_completed: number;
+}
+
+export function useDailyLoopCompleted() {
+  return useQuery<DailyLoopCompleted[]>({
+    queryKey: ["daily-loop-completed"],
+    queryFn: async () => {
+      const { data } = await api.get("/api/operators/daily-loop-completed");
+      return data;
+    },
+  });
+}
+
 export function useOperatorQueue(email?: string) {
   return useQuery<OperatorQueueResponse>({
     queryKey: ["operator-queue", email],

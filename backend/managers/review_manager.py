@@ -215,7 +215,8 @@ def _search_historical_by_id(field: str, query: str) -> pd.DataFrame:
 
 
 def _enrich_with_assignments(reviews: list[dict]) -> None:
-    """Attach assigned_to / assignment_status / assigned_at to each result."""
+    """Attach assigned_to / assignment_status / assigned_at / completed_at to each result.
+    completed_at is the operator's mark-responded time (Loop's "replied at" signal)."""
     assignments = fetch_all_assignments_14d()
     if assignments.empty:
         return
@@ -226,6 +227,7 @@ def _enrich_with_assignments(reviews: list[dict]) -> None:
             "assigned_to": a["operator_email"],
             "assignment_status": a["status"],
             "assigned_at": str(a["assigned_at"]) if a["assigned_at"] else None,
+            "completed_at": str(a["completed_at"]) if a.get("completed_at") is not None and str(a["completed_at"]) != "NaT" else None,
         }
         for _, a in latest.iterrows()
     }
@@ -235,6 +237,7 @@ def _enrich_with_assignments(reviews: list[dict]) -> None:
             r["assigned_to"] = asgn["assigned_to"]
             r["assignment_status"] = asgn["assignment_status"]
             r["assigned_at"] = asgn["assigned_at"]
+            r["completed_at"] = asgn["completed_at"]
 
 
 def _enrich_with_qc(reviews: list[dict]) -> None:

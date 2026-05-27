@@ -6,6 +6,7 @@ from typing import Optional
 import pandas as pd
 
 from backend.repositories.operator_repository import (
+    fetch_daily_loop_completed_14d,
     fetch_operator_chain_breakdown_14d,
     fetch_operator_daily_breakdown_14d,
     fetch_operator_performance_14d,
@@ -40,6 +41,13 @@ def get_daily_breakdown(date_from: Optional[str] = None, date_to: Optional[str] 
     if date_to and not daily.empty:
         daily = daily[daily["assign_date"] <= pd.Timestamp(date_to).date()]
     return df_to_dicts(daily)
+
+
+def get_daily_loop_completed() -> list[dict]:
+    """14-day daily series of completed assignments (Loop's actual throughput).
+    Source: assignments table only — the extension flow writes a completed
+    assignment row for every Loop reply, so this is the canonical count."""
+    return df_to_dicts(fetch_daily_loop_completed_14d())
 
 
 def get_chain_breakdown(operator_email: Optional[str] = None) -> list[dict]:

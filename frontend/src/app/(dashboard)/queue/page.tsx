@@ -6,7 +6,7 @@ import { FiZap } from "react-icons/fi";
 import PortalLoginLink from "@/components/shared/PortalLoginLink";
 import { useMyQueue, useGenerateResponses } from "@/hooks/useMyQueue";
 import { useReviewStats } from "@/hooks/useReviews";
-import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON, formatHoursLeft } from "@/lib/constants";
+import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON, formatHoursLeft, formatReviewDate } from "@/lib/constants";
 import type { Review } from "@/lib/types";
 
 export default function QueuePage() {
@@ -135,14 +135,14 @@ export default function QueuePage() {
               <th className="px-4 py-3 font-medium">#</th>
               <th className="px-4 py-3 font-medium">Priority</th>
               <th className="px-4 py-3 font-medium">Status</th>
-              <th className="px-4 py-3 font-medium">Days Left</th>
+              <th className="px-4 py-3 font-medium" title="Hours remaining until the platform deadline (timezone-agnostic — same number for everyone)">Time Left</th>
               <th className="px-4 py-3 font-medium">Chain</th>
               <th className="px-4 py-3 font-medium">Platform</th>
               <th className="px-4 py-3 font-medium">Customer</th>
               <th className="px-4 py-3 font-medium">Rating</th>
               <th className="px-4 py-3 font-medium min-w-[200px]">Review</th>
               <th className="px-4 py-3 font-medium min-w-[200px]">AI Response</th>
-              <th className="px-4 py-3 font-medium">Date</th>
+              <th className="px-4 py-3 font-medium" title="Review date in restaurant local time (US/CT)">Review Date</th>
               <th className="px-4 py-3 font-medium">Portal</th>
               <th className="px-4 py-3 font-medium">Actions</th>
             </tr>
@@ -198,8 +198,8 @@ export default function QueuePage() {
                       <span className="text-gray-600 italic">No response</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
-                    {r.review_date ? format(new Date(r.review_date), "MMM dd") : "-"}
+                  <td className="px-4 py-3 text-gray-400 whitespace-nowrap" title="Customer's review date in restaurant local time (US/CT)">
+                    {formatReviewDate(r.review_date ? String(r.review_date) : null)}
                   </td>
                   <td className="px-4 py-3">
                     <PortalLoginLink review={r} />

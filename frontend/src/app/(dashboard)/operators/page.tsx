@@ -7,16 +7,19 @@ import { useAuth } from "@/providers/AuthProvider";
 import {
   useOperatorPerformance,
   useDailyBreakdown,
+  useDailyLoopCompleted,
   useOperatorQueue,
   useQCMismatches,
   useQCSummary,
+  type DailyLoopCompleted,
 } from "@/hooks/useOperators";
 import type { OperatorPerformance, DailyBreakdown, Review } from "@/lib/types";
-import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON, formatHoursLeft } from "@/lib/constants";
+import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON, formatHoursLeft, formatIST, formatReviewDate } from "@/lib/constants";
 
 export default function OperatorsPage() {
   const { isLead } = useAuth();
   const { data: perfData, isLoading: perfLoading } = useOperatorPerformance();
+  const { data: dailyLoopData } = useDailyLoopCompleted();
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [dailyOperatorFilter, setDailyOperatorFilter] = useState("");
@@ -82,6 +85,9 @@ export default function OperatorsPage() {
           </div>
         ))}
       </div>
+
+      {/* Daily Loop-completed chart (14 days, from assignments.completed_at) */}
+      <DailyLoopChart data={dailyLoopData || []} />
 
       {/* Performance table */}
       <div>
@@ -255,7 +261,7 @@ export default function OperatorsPage() {
               <table className="w-full text-sm">
                 <thead className="bg-[#262730] text-gray-400 sticky top-0">
                   <tr>
-                    <th className="text-left px-4 py-3">When</th>
+                    <th className="text-left px-4 py-3" title="Operator's response timestamp, shown in IST">When (IST)</th>
                     <th className="text-left px-4 py-3">Operator</th>
                     <th className="text-left px-4 py-3">Chain · Platform</th>
                     <th className="text-left px-4 py-3">Customer</th>
@@ -267,7 +273,7 @@ export default function OperatorsPage() {
                   {rows.map((m, i) => (
                     <tr key={`${m.review_uid}-${i}`} className="border-t border-gray-800 align-top hover:bg-[#262730]/50">
                       <td className="px-4 py-3 text-gray-300 whitespace-nowrap">
-                        {new Date(m.responded_at).toLocaleString()}
+                        {formatIST(m.responded_at)}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">{m.operator_name || m.operator_email}</td>
                       <td className="px-4 py-3 text-gray-300 whitespace-nowrap">{m.chain_name} · {m.platform}</td>
@@ -327,7 +333,7 @@ export default function OperatorsPage() {
             <table className="w-full text-sm">
               <thead className="bg-[#262730] text-gray-400 sticky top-0">
                 <tr>
-                  <th className="text-left px-4 py-3">Date</th>
+                  <th className="text-left px-4 py-3" title="Assignment date in IST (operator workday)">Date (IST)</th>
                   <th className="text-left px-4 py-3">Operator</th>
                   <th className="px-4 py-3 text-right">Assigned</th>
                   <th className="px-4 py-3 text-right">Completed</th>
@@ -410,13 +416,13 @@ export default function OperatorsPage() {
                         <tr>
                           <th className="text-left px-3 py-2">Priority</th>
                           <th className="text-left px-3 py-2">Status</th>
-                          <th className="text-left px-3 py-2">Days Left</th>
+                          <th className="text-left px-3 py-2" title="Hours remaining until the platform deadline (timezone-agnostic)">Time Left</th>
                           <th className="text-left px-3 py-2">Platform</th>
                           <th className="text-left px-3 py-2">Customer</th>
                           <th className="text-left px-3 py-2">Rating</th>
                           <th className="text-left px-3 py-2 min-w-[200px]">Review</th>
                           <th className="text-left px-3 py-2 min-w-[200px]">AI Response</th>
-                          <th className="text-left px-3 py-2">Date</th>
+                          <th className="text-left px-3 py-2" title="Customer's review date in restaurant local time (US/CT)">Review Date</th>
                           <th className="text-left px-3 py-2">Portal</th>
                         </tr>
                       </thead>
@@ -453,8 +459,8 @@ export default function OperatorsPage() {
                                 <span className="text-gray-600 italic">No response</span>
                               )}
                             </td>
-                            <td className="px-3 py-2 text-gray-400 whitespace-nowrap">
-                              {r.review_date ? format(new Date(r.review_date), "MMM dd") : "—"}
+                            <td className="px-3 py-2 text-gray-400 whitespace-nowrap" title="Customer's review date in restaurant local time (US/CT)">
+                              {formatReviewDate(r.review_date ? String(r.review_date) : null)}
                             </td>
                             <td className="px-3 py-2">
                               <PortalLoginLink review={r} />
@@ -471,6 +477,125 @@ export default function OperatorsPage() {
         )}
       </div>
 
+    </div>
+  );
+}
+
+// Daily Loop-completed bar chart (last 14 days). Bars only — single series.
+// Source: assignments.completed_at, so this counts each Loop-replied review
+// once regardless of when the original review was submitted.
+function DailyLoopChart({ data }: { data: DailyLoopCompleted[] }) {
+  if (data.length === 0) {
+    return (
+      <div className="bg-[#262730] rounded-lg p-4 h-48 animate-pulse" />
+    );
+  }
+  const max = Math.max(1, ...data.map((d) => d.loop_completed));
+  const avg = Math.round(data.reduce((s, d) => s + d.loop_completed, 0) / data.length);
+  const total = data.reduce((s, d) => s + d.loop_completed, 0);
+
+  const W = 760;
+  const H = 220;
+  const padL = 40;
+  const padR = 16;
+  const padT = 28;
+  const padB = 36;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const slot = innerW / data.length;
+  const barW = slot * 0.7;
+
+  // iso is an IST date string from the backend (e.g. "2026-05-17"). Parse as
+  // UTC and format as UTC so the label is identical regardless of the viewer's
+  // browser timezone.
+  const fmtDate = (iso: string) => {
+    const d = new Date(iso + "T00:00:00Z");
+    return d.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
+  };
+
+  return (
+    <div className="bg-[#262730] rounded-lg p-4 border border-gray-800">
+      <div className="flex items-baseline justify-between mb-3">
+        <div>
+          <h2 className="text-lg font-semibold">Daily Loop Completed</h2>
+          <p className="text-xs text-gray-400">
+            Last 14 days · grouped by completion date in IST (operator workday)
+          </p>
+        </div>
+        <div className="text-right text-xs text-gray-400">
+          <div>
+            <span className="text-gray-500">14d total</span>{" "}
+            <span className="text-white font-semibold">{total.toLocaleString()}</span>
+          </div>
+          <div>
+            <span className="text-gray-500">avg/day</span>{" "}
+            <span className="text-white font-semibold">{avg.toLocaleString()}</span>
+          </div>
+        </div>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto">
+        {/* y-axis gridlines (4 ticks) */}
+        {[0, 0.25, 0.5, 0.75, 1].map((t) => {
+          const y = padT + innerH * (1 - t);
+          const val = Math.round(max * t);
+          return (
+            <g key={t}>
+              <line
+                x1={padL} y1={y} x2={W - padR} y2={y}
+                stroke="#374151" strokeWidth="1"
+                strokeDasharray={t === 0 ? "0" : "2,3"}
+              />
+              <text
+                x={padL - 6} y={y + 4}
+                textAnchor="end" fontSize="10" fill="#9ca3af"
+              >
+                {val.toLocaleString()}
+              </text>
+            </g>
+          );
+        })}
+        {/* bars */}
+        {data.map((d, i) => {
+          const x = padL + slot * i + (slot - barW) / 2;
+          const h = (d.loop_completed / max) * innerH;
+          const y = padT + (innerH - h);
+          return (
+            <g key={d.date}>
+              <rect
+                x={x} y={y} width={barW} height={h}
+                fill="#a78bfa"
+                rx="2"
+              >
+                <title>{`${d.date}: ${d.loop_completed.toLocaleString()} completed`}</title>
+              </rect>
+              <text
+                x={x + barW / 2} y={y - 4}
+                textAnchor="middle" fontSize="10" fill="#e5e7eb"
+              >
+                {d.loop_completed.toLocaleString()}
+              </text>
+              <text
+                x={x + barW / 2} y={padT + innerH + 14}
+                textAnchor="middle" fontSize="10" fill="#9ca3af"
+              >
+                {fmtDate(d.date)}
+              </text>
+            </g>
+          );
+        })}
+        {/* avg reference line */}
+        <line
+          x1={padL} y1={padT + innerH * (1 - avg / max)}
+          x2={W - padR} y2={padT + innerH * (1 - avg / max)}
+          stroke="#f59e0b" strokeWidth="1" strokeDasharray="4,3"
+        />
+        <text
+          x={W - padR - 4} y={padT + innerH * (1 - avg / max) - 4}
+          textAnchor="end" fontSize="10" fill="#f59e0b"
+        >
+          avg {avg.toLocaleString()}
+        </text>
+      </svg>
     </div>
   );
 }
