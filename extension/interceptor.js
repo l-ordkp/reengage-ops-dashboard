@@ -93,7 +93,18 @@
               clone3.json().then(function (json) {
                 if (json.data && json.data.submitEaterReviewReply) {
                   var reply = json.data.submitEaterReviewReply;
-                  console.log("[ReEngage Interceptor] Fetch UberEats reply submitted!", vars2);
+                  // UE's submitEaterReviewReply.uuid echoes back the review's
+                  // workflowUUID rather than minting a distinct reply ID. Only
+                  // surface platform_reply_id when it's actually different.
+                  var ueReplyId2 = (reply.uuid && reply.uuid !== vars2.workflowUUID) ? reply.uuid : "";
+                  var ueCouponId2 = reply.promotion ? (reply.promotion.uuid || "") : "";
+                  console.log("[ReEngage Interceptor] Fetch UberEats reply submitted!", {
+                    comment: vars2.comment,
+                    promotionValue: vars2.promotionValue,
+                    workflowUUID: vars2.workflowUUID,
+                    platform_reply_id: ueReplyId2,
+                    platform_coupon_id: ueCouponId2,
+                  });
                   window.postMessage({
                     type: "REENGAGE_REPLY_SUBMITTED",
                     platform: "ubereats",
@@ -103,8 +114,8 @@
                       order_id: vars2.workflowUUID || "",
                       confirmed_response: reply.comment || "",
                       confirmed_discount: reply.promotion ? (reply.promotion.formattedValue || reply.promotion.flatValue || "0") : "0",
-                      platform_reply_id: reply.uuid || "",
-                      platform_coupon_id: reply.promotion ? (reply.promotion.uuid || "") : "",
+                      platform_reply_id: ueReplyId2,
+                      platform_coupon_id: ueCouponId2,
                     }
                   }, "*");
                 }
@@ -198,10 +209,18 @@
             try { reqBody = JSON.parse(bodyStr); } catch (e) {}
             var vars = reqBody.variables || {};
 
+            // UE's submitEaterReviewReply.uuid echoes back the review's
+            // workflowUUID rather than minting a distinct reply ID. Only
+            // surface platform_reply_id when it's actually different.
+            var ueReplyId = (reply.uuid && reply.uuid !== vars.workflowUUID) ? reply.uuid : "";
+            var ueCouponId = reply.promotion ? (reply.promotion.uuid || "") : "";
+
             console.log("[ReEngage Interceptor] UberEats reply submitted!", {
               comment: vars.comment,
               promotionValue: vars.promotionValue,
               workflowUUID: vars.workflowUUID,
+              platform_reply_id: ueReplyId,
+              platform_coupon_id: ueCouponId,
             });
 
             window.postMessage({
@@ -213,8 +232,8 @@
                 order_id: vars.workflowUUID || "",
                 confirmed_response: reply.comment || "",
                 confirmed_discount: reply.promotion ? (reply.promotion.formattedValue || reply.promotion.flatValue || "0") : "0",
-                platform_reply_id: reply.uuid || "",
-                platform_coupon_id: reply.promotion ? (reply.promotion.uuid || "") : "",
+                platform_reply_id: ueReplyId,
+                platform_coupon_id: ueCouponId,
               }
             }, "*");
           }
