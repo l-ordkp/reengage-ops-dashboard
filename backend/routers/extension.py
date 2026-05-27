@@ -36,4 +36,6 @@ def mark_responded_endpoint(body: MarkRespondedBody, x_operator_email: str = Hea
         replied_discount=body.replied_discount,
         exact_match_response=body.exact_match_response,
         exact_match_discount=body.exact_match_discount,
+        platform_reply_id=body.platform_reply_id,
+        platform_coupon_id=body.platform_coupon_id,
     )

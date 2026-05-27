@@ -13,3 +13,8 @@ class MarkRespondedBody(BaseModel):
     replied_discount: str = ""
     exact_match_response: bool = True
     exact_match_discount: bool = True
+    # Platform-issued IDs captured from the reply-submission response.
+    # DoorDash: result.messageId + campaignId. UberEats: submitEaterReviewReply.uuid
+    # + submitEaterReviewReply.promotion.uuid. Empty when not present (e.g. no coupon).
+    platform_reply_id: str = ""
+    platform_coupon_id: str = ""

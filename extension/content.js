@@ -57,6 +57,8 @@
           replied_discount: repliedDiscount,
           exact_match_response: exactMatchResponse,
           exact_match_discount: exactMatchDiscount,
+          platform_reply_id: qc.platform_reply_id || "",
+          platform_coupon_id: qc.platform_coupon_id || "",
         }
       }, (result) => {
         if (result && result.success) {

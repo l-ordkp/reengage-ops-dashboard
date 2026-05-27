@@ -128,6 +128,7 @@ def update_assignment_by_order_id(order_id: str) -> None:
 def insert_completed_assignment(
     review_uid: str, order_id: str, operator_email: str,
     chain_name: str, platform: str,
+    platform_reply_id: str = "", platform_coupon_id: str = "",
 ) -> None:
     """Create a synthetic completed assignment (used when extension marks a review without prior assignment)."""
     import uuid
@@ -137,14 +138,42 @@ def insert_completed_assignment(
     safe_operator_email = _escape_sql(operator_email)
     safe_chain_name = _escape_sql(chain_name)
     safe_platform = _escape_sql(platform)
+    reply_id_sql = f"'{_escape_sql(platform_reply_id)}'" if platform_reply_id else "NULL"
+    coupon_id_sql = f"'{_escape_sql(platform_coupon_id)}'" if platform_coupon_id else "NULL"
     bq_exec(f"""
         INSERT INTO `{TABLE_ASSIGNMENTS}`
             (assignment_id, review_uid, order_id, operator_email,
-             chain_name, platform, days_left, status, assigned_at, completed_at)
+             chain_name, platform, days_left, status, assigned_at, completed_at,
+             platform_reply_id, platform_coupon_id)
         VALUES
             ('{uuid.uuid4()}', '{safe_review_uid}', '{safe_order_id}', '{safe_operator_email}',
              '{safe_chain_name}', '{safe_platform}', 0, 'completed',
-             TIMESTAMP('{now}'), TIMESTAMP('{now}'))
+             TIMESTAMP('{now}'), TIMESTAMP('{now}'),
+             {reply_id_sql}, {coupon_id_sql})
+    """)
+
+
+def update_assignment_platform_ids(
+    order_id: str, platform_reply_id: str = "", platform_coupon_id: str = "",
+) -> None:
+    """Stamp the platform-issued IDs onto the most recent assignment row for this order.
+
+    Run after update_assignment_by_order_id so that pre-existing pending
+    assignments (now marked completed) also pick up the platform reply/coupon
+    IDs returned by DoorDash/UberEats at reply-submission time.
+    """
+    if not (platform_reply_id or platform_coupon_id):
+        return
+    safe_order_id = _escape_sql(order_id)
+    set_parts = []
+    if platform_reply_id:
+        set_parts.append(f"platform_reply_id = '{_escape_sql(platform_reply_id)}'")
+    if platform_coupon_id:
+        set_parts.append(f"platform_coupon_id = '{_escape_sql(platform_coupon_id)}'")
+    bq_exec(f"""
+        UPDATE `{TABLE_ASSIGNMENTS}`
+        SET {', '.join(set_parts)}
+        WHERE order_id = '{safe_order_id}'
     """)
 
 

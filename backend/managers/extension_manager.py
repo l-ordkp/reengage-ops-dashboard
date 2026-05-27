@@ -14,6 +14,7 @@ from backend.repositories.assignment_repository import (
     insert_completed_assignment,
     mark_is_loop_replied,
     update_assignment_by_order_id,
+    update_assignment_platform_ids,
 )
 from backend.repositories.extension_repository import (
     is_operator_approved,
@@ -72,6 +73,7 @@ def mark_responded(
     operator_email: str,
     replied_response: str = "", replied_discount: str = "",
     exact_match_response: bool = True, exact_match_discount: bool = True,
+    platform_reply_id: str = "", platform_coupon_id: str = "",
 ) -> dict:
     operator_email = validate_operator(operator_email)
     if not UUID_RE.match(order_id):
@@ -116,6 +118,18 @@ def mark_responded(
         insert_completed_assignment(
             review_uid=review_uid, order_id=order_id, operator_email=operator_email,
             chain_name=chain_name, platform=platform,
+            platform_reply_id=platform_reply_id,
+            platform_coupon_id=platform_coupon_id,
+        )
+
+    # Persist platform-issued IDs onto the assignment row. Done as a separate
+    # UPDATE so the existing-row branch above also gets the IDs without
+    # widening update_assignment_by_order_id's responsibilities.
+    if platform_reply_id or platform_coupon_id:
+        update_assignment_platform_ids(
+            order_id=order_id,
+            platform_reply_id=platform_reply_id,
+            platform_coupon_id=platform_coupon_id,
         )
 
     return {

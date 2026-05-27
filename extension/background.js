@@ -362,6 +362,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         body.replied_discount = qc.replied_discount || "";
         body.exact_match_response = qc.exact_match_response || false;
         body.exact_match_discount = qc.exact_match_discount || false;
+        body.platform_reply_id = qc.platform_reply_id || "";
+        body.platform_coupon_id = qc.platform_coupon_id || "";
       }
       console.log(`[ReEngage BG] MARK_RESPONDED with QC:`, qc ? `match_resp=${qc.exact_match_response}, match_disc=${qc.exact_match_discount}` : "no QC data");
       fetch(`${apiBase}/api/extension/mark-responded`, {

@@ -103,6 +103,8 @@
                       order_id: vars2.workflowUUID || "",
                       confirmed_response: reply.comment || "",
                       confirmed_discount: reply.promotion ? (reply.promotion.formattedValue || reply.promotion.flatValue || "0") : "0",
+                      platform_reply_id: reply.uuid || "",
+                      platform_coupon_id: reply.promotion ? (reply.promotion.uuid || "") : "",
                     }
                   }, "*");
                 }
@@ -211,6 +213,8 @@
                 order_id: vars.workflowUUID || "",
                 confirmed_response: reply.comment || "",
                 confirmed_discount: reply.promotion ? (reply.promotion.formattedValue || reply.promotion.flatValue || "0") : "0",
+                platform_reply_id: reply.uuid || "",
+                platform_coupon_id: reply.promotion ? (reply.promotion.uuid || "") : "",
               }
             }, "*");
           }
@@ -227,10 +231,20 @@
 
       this.addEventListener("load", function () {
         if (self.status >= 200 && self.status < 300) {
+          // Parse response body for platform-issued IDs (messageId for the reply,
+          // campaignId for the coupon — campaignId is null when no coupon attached).
+          var ddResp = {};
+          try { ddResp = JSON.parse(self.responseText); } catch (e) {}
+          var ddResult = ddResp.result || {};
+          var platformReplyId = ddResult.messageId || "";
+          var platformCouponId = ddResp.campaignId || "";
+
           console.log("[ReEngage Interceptor] DoorDash reply submitted!", {
             mx_response: ddContent.mx_response,
             promo_value: ddContent.promo_value,
             complaintId: ddReqBody.complaintId,
+            platform_reply_id: platformReplyId,
+            platform_coupon_id: platformCouponId,
           });
           window.postMessage({
             type: "REENGAGE_REPLY_SUBMITTED",
@@ -239,6 +253,8 @@
               replied_response: ddContent.mx_response || "",
               replied_discount: String(ddContent.promo_value || 0),
               order_id: ddReqBody.complaintId || "",
+              platform_reply_id: platformReplyId,
+              platform_coupon_id: platformCouponId,
             }
           }, "*");
         }
