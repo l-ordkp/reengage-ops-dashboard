@@ -35,8 +35,20 @@ export default function ChainHealthPage() {
         <MetricCard label="Expired"      value={summary?.expired}      color="text-red-400"    />
       </div>
 
-      {/* Subset card */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      {/* Subset cards — slices of Pending / Responded, not partition members */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <MetricCard
+          label="Critical"
+          value={summary?.critical}
+          color="text-red-500"
+          subtitle="pending · ≤1 day left"
+        />
+        <MetricCard
+          label="Urgent"
+          value={summary?.urgent}
+          color="text-orange-400"
+          subtitle="pending · 2 days left"
+        />
         <MetricCard
           label="Loop Responded"
           value={summary?.loop_responded}

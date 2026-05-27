@@ -128,6 +128,8 @@ export interface ChainHealthSummary {
   responded: number;
   loop_responded: number;
   expired: number;
+  critical: number;
+  urgent: number;
 }
 
 export interface ChainHealthResponse {

@@ -110,6 +110,8 @@ def get_chain_health() -> dict:
         "responded":      int(chains["responded"].sum()),
         "loop_responded": int(chains["loop_responded"].sum()),
         "expired":        int(chains["expired"].sum()),
+        "critical":       int(chains["critical"].sum()),
+        "urgent":         int(chains["urgent"].sum()),
     }
 
     return {"summary": summary, "chains": df_to_dicts(chains)}
@@ -119,4 +121,5 @@ def _empty_summary() -> dict:
     return {
         "total": 0, "out_of_scope": 0, "in_scope": 0,
         "pending": 0, "responded": 0, "loop_responded": 0, "expired": 0,
+        "critical": 0, "urgent": 0,
     }
