@@ -98,13 +98,18 @@ def fetch_reviews_14d() -> pd.DataFrame:
     reviews_with_deadline AS (
         SELECT
             eligible_reviews.*,
+            -- Hours from now until the platform deadline (review_timestamp + N days).
+            -- Switched from day-bucket math: the date-rounded version lost 0-24h of
+            -- usable window per review and its CST midnight rollover hit mid-IST-shift,
+            -- silently flipping reviews from CRITICAL → EXPIRED while operators worked.
+            -- TIMESTAMP_DIFF is timezone-agnostic (returns elapsed UTC hours).
             CASE
                 WHEN platform = 'Doordash' THEN
-                    DATE_DIFF(DATE_ADD(review_date, INTERVAL 7 DAY), CURRENT_DATE('America/Chicago'), DAY)
+                    TIMESTAMP_DIFF(TIMESTAMP_ADD(event_timestamp, INTERVAL 7 DAY), CURRENT_TIMESTAMP(), HOUR)
                 WHEN platform = 'UberEats' THEN
-                    DATE_DIFF(DATE_ADD(review_date, INTERVAL 14 DAY), CURRENT_DATE('America/Chicago'), DAY)
+                    TIMESTAMP_DIFF(TIMESTAMP_ADD(event_timestamp, INTERVAL 14 DAY), CURRENT_TIMESTAMP(), HOUR)
                 ELSE 0
-            END AS days_left
+            END AS hours_left
         FROM eligible_reviews
     ),
     reviews_with_response AS (
@@ -135,13 +140,13 @@ def fetch_reviews_14d() -> pd.DataFrame:
                 WHEN is_replied = TRUE THEN 'RESPONDED'
                 WHEN response_sent IS NOT NULL THEN 'RESPONDED'
                 WHEN assignment_status = 'completed' THEN 'RESPONDED'
-                WHEN days_left <= 0 THEN 'EXPIRED'
+                WHEN hours_left <= 0 THEN 'EXPIRED'
                 ELSE 'PENDING'
             END AS status,
             COALESCE(replied_comment, ai_response) AS response_text,
             CASE
-                WHEN days_left <= 1 THEN 'CRITICAL'
-                WHEN days_left = 2  THEN 'URGENT'
+                WHEN hours_left <= 24 THEN 'CRITICAL'
+                WHEN hours_left <= 48 THEN 'URGENT'
                 ELSE 'NORMAL'
             END AS priority,
             CASE
@@ -176,7 +181,7 @@ def fetch_reviews_14d() -> pd.DataFrame:
         customer_name, customer_id, orders_count, customer_type,
         CAST(star_rating AS STRING) AS star_rating, rating_type, rating_value,
         rating_numeric, rating_display, review_text, items, order_value,
-        review_date, days_left,
+        review_date, hours_left,
         portal_link, response_text, ai_response_type AS response_type, coupon_value,
         CAST(config_id AS STRING) AS config_id, status, priority,
         is_replied,
@@ -189,7 +194,7 @@ def fetch_reviews_14d() -> pd.DataFrame:
     FROM reviews_with_status
     ORDER BY
         CASE priority WHEN 'CRITICAL' THEN 1 WHEN 'URGENT' THEN 2 ELSE 3 END,
-        days_left ASC, chain_name, platform, slug
+        hours_left ASC, chain_name, platform, slug
     """
     return bq_read(sql)
 

@@ -6,7 +6,7 @@ import PortalLoginLink from "@/components/shared/PortalLoginLink";
 import { useAuth } from "@/providers/AuthProvider";
 import { useReviewFilters } from "@/hooks/useReviews";
 import api from "@/lib/api";
-import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON } from "@/lib/constants";
+import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON, formatHoursLeft } from "@/lib/constants";
 import type { Review } from "@/lib/types";
 
 type SearchMode = "by_id" | "by_customer";
@@ -165,9 +165,9 @@ export default function SearchPage() {
                 <span className="text-sm text-gray-500">|</span>
                 <span className="text-sm text-gray-400">{r.chain_name}</span>
                 <span className="text-sm text-gray-400 capitalize">{r.platform}</span>
-                {r.days_left != null && (
-                  <span className={`text-sm ${r.days_left <= 1 ? "text-red-400" : "text-gray-400"}`}>
-                    {r.days_left}d left
+                {r.hours_left != null && (
+                  <span className={`text-sm ${r.hours_left <= 24 ? "text-red-400" : "text-gray-400"}`}>
+                    {formatHoursLeft(r.hours_left)} left
                   </span>
                 )}
                 <div className="ml-auto">

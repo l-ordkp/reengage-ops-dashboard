@@ -1,8 +1,8 @@
-"""Review priority based on days remaining in response window."""
+"""Review priority based on hours remaining until platform deadline."""
 from enum import Enum
 
 
 class Priority(str, Enum):
-    CRITICAL = "CRITICAL"  # days_left <= 1
-    URGENT = "URGENT"      # days_left == 2
-    NORMAL = "NORMAL"      # days_left > 2
+    CRITICAL = "CRITICAL"  # hours_left <= 24
+    URGENT = "URGENT"      # 24 < hours_left <= 48
+    NORMAL = "NORMAL"      # hours_left > 48

@@ -21,7 +21,7 @@ export interface Review {
   items: string;
   order_value: number;
   review_date: string;
-  days_left: number;
+  hours_left: number;
   portal_link: string;
   response_text: string | null;
   response_type: string | null;
@@ -110,8 +110,8 @@ export interface ChainHealth {
   responded: number;         // in-scope, is_replied OR is_loop_replied
   loop_responded: number;    // in-scope, is_loop_replied (subset of responded)
   expired: number;           // in-scope, past window, no reply
-  critical: number;          // pending AND days_left <= 1 (act today)
-  urgent: number;            // pending AND days_left == 2 (act tomorrow)
+  critical: number;          // pending AND hours_left <= 24 (act today)
+  urgent: number;            // pending AND 24 < hours_left <= 48 (act by tomorrow)
   has_response: number;
   avg_rating: number;
   locations: number;

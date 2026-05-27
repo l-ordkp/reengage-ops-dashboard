@@ -69,8 +69,8 @@ export default function ChainHealthPage() {
               <th className="px-4 py-3 font-medium text-right">Responded</th>
               <th className="px-4 py-3 font-medium text-right">Loop Responded</th>
               <th className="px-4 py-3 font-medium text-right">Expired</th>
-              <th className="px-4 py-3 font-medium text-right" title="Pending AND days_left <= 1 — act today">Critical</th>
-              <th className="px-4 py-3 font-medium text-right" title="Pending AND days_left == 2 — act by tomorrow">Urgent</th>
+              <th className="px-4 py-3 font-medium text-right" title="Pending AND hours_left ≤ 24 — act within 24h">Critical</th>
+              <th className="px-4 py-3 font-medium text-right" title="Pending AND 24 &lt; hours_left ≤ 48 — act within 48h">Urgent</th>
               <th className="px-4 py-3 font-medium min-w-[160px]">Response Rate</th>
               <th className="px-4 py-3 font-medium min-w-[160px]">AI Coverage</th>
               <th className="px-4 py-3 font-medium text-right">Avg Rating</th>

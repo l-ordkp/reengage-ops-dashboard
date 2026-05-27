@@ -4,7 +4,7 @@ import { useState, useCallback } from "react";
 import { format } from "date-fns";
 import { FiDownload, FiChevronLeft, FiChevronRight, FiCopy, FiCheck } from "react-icons/fi";
 import { useReviews, useReviewFilters } from "@/hooks/useReviews";
-import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON } from "@/lib/constants";
+import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON, formatHoursLeft } from "@/lib/constants";
 import PortalLoginLink from "@/components/shared/PortalLoginLink";
 import type { Review } from "@/lib/types";
 
@@ -42,7 +42,7 @@ export default function ReviewsPage() {
       "response_text",
       "status",
       "priority",
-      "days_left",
+      "hours_left",
       "review_date",
     ];
     const rows = reviews.map((r: Review) =>
@@ -168,8 +168,8 @@ export default function ReviewsPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={r.days_left <= 1 ? "text-red-400 font-semibold" : "text-gray-300"}>
-                      {r.days_left}d
+                    <span className={r.hours_left <= 24 ? "text-red-400 font-semibold" : "text-gray-300"}>
+                      {formatHoursLeft(r.hours_left)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-gray-300">{r.chain_name}</td>

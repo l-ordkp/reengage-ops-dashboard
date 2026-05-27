@@ -53,7 +53,7 @@ def run_assignment(full_reassign: bool = True) -> dict:
         if pending.empty:
             return {"info": "All pending reviews already assigned", "assigned": 0}
 
-    pending = pending.sort_values("days_left", ascending=True)
+    pending = pending.sort_values("hours_left", ascending=True)
     ops = _build_operator_state(operators, len(pending))
     group_plan = _build_group_plan(pending, ops)
     assignments = _materialize_assignments(pending, ops, group_plan)
@@ -100,7 +100,7 @@ def _build_operator_state(operators, total_reviews: int) -> list[dict]:
 def _build_group_plan(pending, ops: list[dict]) -> dict:
     """Decide which operator gets each chain x platform group."""
     groups = {
-        (chain, plat): grp.sort_values("days_left").to_dict("records")
+        (chain, plat): grp.sort_values("hours_left").to_dict("records")
         for (chain, plat), grp in pending.groupby(["chain_name", "platform"])
     }
     chain_bundles = defaultdict(list)
@@ -167,7 +167,10 @@ def _materialize_assignments(pending, ops, group_plan) -> list[dict]:
                     "operator_email": ops[op_idx]["email"],
                     "chain_name": chain,
                     "platform": plat,
-                    "days_left": rev["days_left"],
+                    # Snapshot floor(hours/24) into the legacy days_left column on
+                    # the assignments table. The column is metadata-only — live
+                    # status/priority is recomputed from hours_left on each read.
+                    "days_left": max(int(rev["hours_left"] // 24), 0),
                 })
             offset += count
     return rows

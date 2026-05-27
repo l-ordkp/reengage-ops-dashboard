@@ -27,7 +27,7 @@ def get_my_queue(email: str) -> dict:
     platform_order = {"Doordash": 0, "UberEats": 1}
     df_q["_plat_order"] = df_q["platform"].map(platform_order).fillna(2)
     df_q = df_q.sort_values(
-        ["chain_name", "_plat_order", "days_left"],
+        ["chain_name", "_plat_order", "hours_left"],
         ascending=[True, True, True]
     ).drop(columns=["_plat_order"])
 

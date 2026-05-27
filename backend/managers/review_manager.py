@@ -176,11 +176,11 @@ def _search_historical_by_id(field: str, query: str) -> pd.DataFrame:
             DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')) AS review_date,
             CASE
                 WHEN ar.platform = 'Doordash' THEN
-                    DATE_DIFF(DATE_ADD(DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')), INTERVAL 7 DAY), CURRENT_DATE('America/Chicago'), DAY)
+                    TIMESTAMP_DIFF(TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 7 DAY), CURRENT_TIMESTAMP(), HOUR)
                 WHEN ar.platform = 'UberEats' THEN
-                    DATE_DIFF(DATE_ADD(DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')), INTERVAL 14 DAY), CURRENT_DATE('America/Chicago'), DAY)
+                    TIMESTAMP_DIFF(TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 14 DAY), CURRENT_TIMESTAMP(), HOUR)
                 ELSE 0
-            END AS days_left,
+            END AS hours_left,
             rr.response_text, rr.response_type, rr.coupon_value,
             CASE
                 WHEN ar.platform = 'UberEats' THEN
@@ -202,12 +202,12 @@ def _search_historical_by_id(field: str, query: str) -> pd.DataFrame:
             CASE
                 WHEN is_replied = TRUE THEN 'RESPONDED'
                 WHEN is_loop_replied = TRUE THEN 'RESPONDED'
-                WHEN days_left <= 0 THEN 'EXPIRED'
+                WHEN hours_left <= 0 THEN 'EXPIRED'
                 ELSE 'PENDING'
             END AS status,
             CASE
-                WHEN days_left <= 1 THEN 'CRITICAL'
-                WHEN days_left = 2 THEN 'URGENT'
+                WHEN hours_left <= 24 THEN 'CRITICAL'
+                WHEN hours_left <= 48 THEN 'URGENT'
                 ELSE 'NORMAL'
             END AS priority
         FROM base

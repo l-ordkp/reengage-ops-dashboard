@@ -12,7 +12,7 @@ import {
   useQCSummary,
 } from "@/hooks/useOperators";
 import type { OperatorPerformance, DailyBreakdown, Review } from "@/lib/types";
-import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON } from "@/lib/constants";
+import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON, formatHoursLeft } from "@/lib/constants";
 
 export default function OperatorsPage() {
   const { isLead } = useAuth();
@@ -434,8 +434,8 @@ export default function OperatorsPage() {
                               </span>
                             </td>
                             <td className="px-3 py-2 whitespace-nowrap">
-                              <span className={r.days_left <= 1 ? "text-red-400 font-semibold" : "text-gray-300"}>
-                                {r.days_left}d
+                              <span className={r.hours_left <= 24 ? "text-red-400 font-semibold" : "text-gray-300"}>
+                                {formatHoursLeft(r.hours_left)}
                               </span>
                             </td>
                             <td className="px-3 py-2 text-gray-300 capitalize whitespace-nowrap">{r.platform}</td>

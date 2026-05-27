@@ -165,26 +165,24 @@ def mark_is_loop_replied(order_id: str) -> None:
 
 def expire_stale_assignments() -> None:
     """
-    Mark pending assignments as expired if the review's response window has passed.
-    Uses real review_timestamp to compute days_left (not the stale snapshot).
+    Mark pending assignments as expired once the platform deadline has passed.
+    Recomputes the deadline from review_timestamp + N days against CURRENT_TIMESTAMP
+    so the rule matches the live status engine (hour-precise, no date rounding).
     """
     bq_exec(f"""
     UPDATE `{TABLE_ASSIGNMENTS}` a
     SET status = 'expired'
     WHERE a.status = 'pending'
-      AND (
-        a.days_left <= 0
-        OR EXISTS (
-          SELECT 1 FROM `{TABLE_AUTOMATION_REVIEWS}` ar
-          WHERE ar.order_id = a.order_id
-            AND CASE
-              WHEN a.platform = 'Doordash' THEN
-                DATE_DIFF(DATE_ADD(DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')), INTERVAL 7 DAY), CURRENT_DATE('America/Chicago'), DAY)
-              WHEN a.platform = 'UberEats' THEN
-                DATE_DIFF(DATE_ADD(DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp), 'America/Chicago')), INTERVAL 14 DAY), CURRENT_DATE('America/Chicago'), DAY)
-              ELSE 0
-            END <= 0
-        )
+      AND EXISTS (
+        SELECT 1 FROM `{TABLE_AUTOMATION_REVIEWS}` ar
+        WHERE ar.order_id = a.order_id
+          AND CURRENT_TIMESTAMP() >= CASE
+            WHEN a.platform = 'Doordash' THEN
+              TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 7 DAY)
+            WHEN a.platform = 'UberEats' THEN
+              TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 14 DAY)
+            ELSE CURRENT_TIMESTAMP()
+          END
       )
     """)
 
