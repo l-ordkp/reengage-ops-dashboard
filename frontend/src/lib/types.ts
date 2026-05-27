@@ -110,7 +110,8 @@ export interface ChainHealth {
   responded: number;         // in-scope, is_replied OR is_loop_replied
   loop_responded: number;    // in-scope, is_loop_replied (subset of responded)
   expired: number;           // in-scope, past window, no reply
-  critical: number;
+  critical: number;          // pending AND days_left <= 1 (act today)
+  urgent: number;            // pending AND days_left == 2 (act tomorrow)
   has_response: number;
   avg_rating: number;
   locations: number;

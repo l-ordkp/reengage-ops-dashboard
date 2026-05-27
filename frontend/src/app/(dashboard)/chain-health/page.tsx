@@ -57,7 +57,8 @@ export default function ChainHealthPage() {
               <th className="px-4 py-3 font-medium text-right">Responded</th>
               <th className="px-4 py-3 font-medium text-right">Loop Responded</th>
               <th className="px-4 py-3 font-medium text-right">Expired</th>
-              <th className="px-4 py-3 font-medium text-right">Critical</th>
+              <th className="px-4 py-3 font-medium text-right" title="Pending AND days_left <= 1 — act today">Critical</th>
+              <th className="px-4 py-3 font-medium text-right" title="Pending AND days_left == 2 — act by tomorrow">Urgent</th>
               <th className="px-4 py-3 font-medium min-w-[160px]">Response Rate</th>
               <th className="px-4 py-3 font-medium min-w-[160px]">AI Coverage</th>
               <th className="px-4 py-3 font-medium text-right">Avg Rating</th>
@@ -66,10 +67,10 @@ export default function ChainHealthPage() {
           </thead>
           <tbody>
             {isLoading ? (
-              <SkeletonRows cols={13} rows={6} />
+              <SkeletonRows cols={14} rows={6} />
             ) : chains.length === 0 ? (
               <tr>
-                <td colSpan={13} className="px-4 py-12 text-center text-gray-500">
+                <td colSpan={14} className="px-4 py-12 text-center text-gray-500">
                   No chain data available
                 </td>
               </tr>
@@ -88,6 +89,7 @@ export default function ChainHealthPage() {
                   <td className="px-4 py-3 text-right text-purple-400">{c.loop_responded}</td>
                   <td className="px-4 py-3 text-right text-red-400">{c.expired}</td>
                   <td className="px-4 py-3 text-right text-red-500">{c.critical}</td>
+                  <td className="px-4 py-3 text-right text-orange-400">{c.urgent}</td>
                   <td className="px-4 py-3">
                     <ProgressBar value={c.response_rate} color="bg-green-500" />
                   </td>

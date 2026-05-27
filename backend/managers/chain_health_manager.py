@@ -30,7 +30,19 @@ def get_chain_health() -> dict:
     if not in_scope.empty:
         # fetch_reviews_14d's LEFT JOINs (to review_responses + assignments)
         # can multiply rows per review_uid — dedupe before aggregating.
-        in_scope_unique = in_scope.drop_duplicates(subset=["review_uid"], keep="first")
+        in_scope_unique = in_scope.drop_duplicates(subset=["review_uid"], keep="first").copy()
+        # Critical / Urgent are urgency-now metrics: only PENDING reviews with
+        # <=1 day / ==2 days left should count. The previous version counted
+        # every review that ever passed through the critical window in 14d
+        # (including responded + expired), inflating the number 5-10x.
+        in_scope_unique["is_critical_pending"] = (
+            (in_scope_unique["priority"] == "CRITICAL")
+            & (in_scope_unique["status"] == "PENDING")
+        )
+        in_scope_unique["is_urgent_pending"] = (
+            (in_scope_unique["priority"] == "URGENT")
+            & (in_scope_unique["status"] == "PENDING")
+        )
         in_scope_rollup = in_scope_unique.groupby("chain_name").agg(
             in_scope=("review_uid", "count"),
             in_scope_responded=("status", lambda x: int((x == "RESPONDED").sum())),
@@ -40,7 +52,8 @@ def get_chain_health() -> dict:
                 "is_loop_replied",
                 lambda x: int(x.fillna(False).astype(bool).sum()),
             ),
-            critical=("priority", lambda x: int((x == "CRITICAL").sum())),
+            critical=("is_critical_pending", "sum"),
+            urgent=("is_urgent_pending", "sum"),
             has_response=("response_text", lambda x: int(x.notna().sum())),
             avg_rating=("rating_numeric", "mean"),
             locations=("slug", "nunique"),
@@ -48,7 +61,7 @@ def get_chain_health() -> dict:
     else:
         in_scope_rollup = pd.DataFrame(columns=[
             "chain_name", "in_scope", "in_scope_responded", "pending", "expired",
-            "in_scope_loop_responded", "critical", "has_response",
+            "in_scope_loop_responded", "critical", "urgent", "has_response",
             "avg_rating", "locations",
         ])
 
@@ -59,7 +72,7 @@ def get_chain_health() -> dict:
 
     int_cols = [
         "in_scope", "in_scope_responded", "pending", "expired",
-        "in_scope_loop_responded", "critical", "has_response", "locations",
+        "in_scope_loop_responded", "critical", "urgent", "has_response", "locations",
     ]
     for col in int_cols:
         chains[col] = chains[col].fillna(0).astype(int)
