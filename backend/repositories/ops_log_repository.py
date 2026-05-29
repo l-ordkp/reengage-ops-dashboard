@@ -122,3 +122,31 @@ def log_action(
          '{safe_action}', '{safe_operator_email}', '{safe_performed_by}',
          '{safe_remarks}', TIMESTAMP('{now}'))
     """)
+
+
+def log_actions_bulk(entries: list[dict]) -> None:
+    """Bulk variant of log_action. Each entry: review_uid, platform, chain_name,
+    action, operator_email, performed_by, remarks. Used by the observed-responded
+    flow so a single dashboard refresh of N back-marked reviews produces one
+    INSERT, not N."""
+    if not entries:
+        return
+    now = _now_str()
+    value_rows = []
+    for entry in entries:
+        value_rows.append(
+            f"('{uuid.uuid4()}', '{_escape_sql(entry['review_uid'])}', "
+            f"'{_escape_sql(entry['platform'])}', '{_escape_sql(entry.get('chain_name', ''))}', "
+            f"'{_escape_sql(entry['action'])}', '{_escape_sql(entry['operator_email'])}', "
+            f"'{_escape_sql(entry['performed_by'])}', '{_escape_sql(entry.get('remarks', ''))}', "
+            f"TIMESTAMP('{now}'))"
+        )
+    batch_size = 500
+    for start in range(0, len(value_rows), batch_size):
+        batch = value_rows[start:start + batch_size]
+        bq_exec(f"""
+        INSERT INTO `{TABLE_OPS_LOG}`
+            (id, review_uid, platform, chain_name, action,
+             operator_email, performed_by, remarks, processing_timestamp)
+        VALUES {', '.join(batch)}
+        """)

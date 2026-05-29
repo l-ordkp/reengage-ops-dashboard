@@ -10,7 +10,10 @@ import uuid
 from fastapi import HTTPException
 
 from backend.repositories.assignment_repository import (
+    bulk_complete_pending_by_ids,
+    bulk_insert_observed_assignments,
     fetch_assignment_by_order_id,
+    fetch_assignments_by_ids,
     insert_completed_assignment,
     mark_is_loop_replied,
     update_assignment_by_order_id,
@@ -22,7 +25,8 @@ from backend.repositories.extension_repository import (
     lookup_review_uid_by_order,
     resolve_canonical_order_id,
 )
-from backend.repositories.ops_log_repository import log_action
+from backend.repositories.ops_log_repository import log_action, log_actions_bulk
+from backend.repositories.review_repository import fetch_reviews_14d
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -140,4 +144,128 @@ def mark_responded(
             "exact_match_response": exact_match_response,
             "exact_match_discount": exact_match_discount,
         } if has_qc else None,
+    }
+
+
+def observed_responded(items: list[dict], operator_email: str) -> dict:
+    """Back-mark reviews the platform has confirmed as replied (merchant
+    self-resolved, or operator submitted via platform UI without our extension).
+
+    Three-state logic per item:
+      - already 'completed' → skip (don't overwrite a real submit's metadata)
+      - 'pending'           → flip to completed (audit: auto_during_pending)
+      - no row              → INSERT as completed (audit: auto_self_resolved)
+    """
+    operator_email = validate_operator(operator_email)
+
+    valid: list[dict] = []
+    for item in items:
+        platform = (item.get("platform") or "").strip()
+        review_uid = (item.get("review_uid") or "").strip()
+        order_id = (item.get("order_id") or "").strip()
+        if platform not in ("Doordash", "UberEats"):
+            continue
+        if not UUID_RE.match(review_uid) or not UUID_RE.match(order_id):
+            continue
+        valid.append({
+            "platform": platform,
+            "review_uid": review_uid,
+            "order_id": order_id,
+            "store_id": (item.get("store_id") or "").strip(),
+        })
+
+    if not valid:
+        return {"processed": 0, "skipped": 0, "flipped": 0, "inserted": 0}
+
+    existing = fetch_assignments_by_ids(
+        review_uids=[v["review_uid"] for v in valid],
+        order_ids=[v["order_id"] for v in valid],
+    )
+    # Priority resolves "multiple rows for the same review_uid/order_id" cases.
+    # A live 'pending' assignment must beat a stale 'reassigned'/'expired' row,
+    # otherwise iteration order (undefined in BQ) decides whether we flip or
+    # insert. 'completed' is the firm cap — never overwritten by an observation.
+    STATUS_PRIORITY = {"completed": 3, "pending": 2, "expired": 1, "reassigned": 0}
+
+    def _merge_status(existing_status: str | None, new_status: str) -> str:
+        if existing_status is None:
+            return new_status
+        return new_status if STATUS_PRIORITY.get(new_status, -1) > STATUS_PRIORITY.get(existing_status, -1) else existing_status
+
+    status_by_review_uid: dict[str, str] = {}
+    status_by_order_id: dict[str, str] = {}
+    if not existing.empty:
+        for _, row in existing.iterrows():
+            if row.get("review_uid"):
+                status_by_review_uid[row["review_uid"]] = _merge_status(
+                    status_by_review_uid.get(row["review_uid"]), row["status"],
+                )
+            if row.get("order_id"):
+                status_by_order_id[row["order_id"]] = _merge_status(
+                    status_by_order_id.get(row["order_id"]), row["status"],
+                )
+
+    to_flip: list[dict] = []
+    to_insert: list[dict] = []
+    skipped = 0
+    for item in valid:
+        # Look at both lookup keys; pick whichever is higher priority.
+        candidate_statuses = [
+            status_by_review_uid.get(item["review_uid"]),
+            status_by_order_id.get(item["order_id"]),
+        ]
+        candidate_statuses = [s for s in candidate_statuses if s]
+        status = (
+            max(candidate_statuses, key=lambda s: STATUS_PRIORITY.get(s, -1))
+            if candidate_statuses else None
+        )
+        if status == "completed":
+            skipped += 1
+        elif status == "pending":
+            to_flip.append(item)
+        else:
+            to_insert.append(item)
+
+    if to_flip:
+        bulk_complete_pending_by_ids(
+            review_uids=[v["review_uid"] for v in to_flip],
+            order_ids=[v["order_id"] for v in to_flip],
+        )
+    if to_insert:
+        bulk_insert_observed_assignments(to_insert, operator_email)
+
+    log_entries: list[dict] = []
+    for item in to_flip:
+        log_entries.append({
+            "review_uid": item["review_uid"],
+            "platform": item["platform"],
+            "chain_name": "",
+            "action": "observed_responded",
+            "operator_email": operator_email,
+            "performed_by": operator_email,
+            "remarks": "auto_during_pending",
+        })
+    for item in to_insert:
+        log_entries.append({
+            "review_uid": item["review_uid"],
+            "platform": item["platform"],
+            "chain_name": "",
+            "action": "observed_responded",
+            "operator_email": operator_email,
+            "performed_by": operator_email,
+            "remarks": "auto_self_resolved",
+        })
+    if log_entries:
+        log_actions_bulk(log_entries)
+
+    # Bust the dashboard cache so the back-marked reviews flip to RESPONDED
+    # on the next read, not after the 5-minute TTL expires.
+    if to_flip or to_insert:
+        fetch_reviews_14d.clear()
+
+    return {
+        "processed": len(valid),
+        "skipped": skipped,
+        "flipped": len(to_flip),
+        "inserted": len(to_insert),
     }

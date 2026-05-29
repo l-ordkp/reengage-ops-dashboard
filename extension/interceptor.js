@@ -8,6 +8,45 @@
 
   console.log("[ReEngage Interceptor] Loaded in MAIN world on", window.location.hostname);
 
+  // Walk an arbitrary UE GraphQL response and find any review-shaped object
+  // with a populated reply. Handles the list query (data.eaterReviews.reviews)
+  // AND the single-review detail query (whatever UE names it) without having
+  // to know operation names. Skips merchant-automation config objects (they
+  // have replyText:string + automationUUID, not reply.comment + workflowUUID).
+  function findUERespondedReviews(json) {
+    var found = {};
+    var seen = new WeakSet();
+    function walk(obj) {
+      if (!obj || typeof obj !== "object" || seen.has(obj)) return;
+      seen.add(obj);
+      if (Array.isArray(obj)) {
+        for (var i = 0; i < obj.length; i++) walk(obj[i]);
+        return;
+      }
+      var wf = obj.workflowUUID
+        || (obj.order && obj.order.workflowUUID)
+        || null;
+      if (!wf && obj.uuid && obj.reply && typeof obj.reply === "object") {
+        wf = obj.uuid;
+      }
+      var reply = obj.reply;
+      if (wf && reply && typeof reply === "object" &&
+          (reply.comment || reply.text || reply.responseText)) {
+        found[wf] = {
+          workflowUUID: wf,
+          userUUID: reply.userUUID || null,
+        };
+      }
+      for (var key in obj) {
+        if (Object.prototype.hasOwnProperty.call(obj, key)) walk(obj[key]);
+      }
+    }
+    walk(json);
+    var out = [];
+    for (var k in found) out.push(found[k]);
+    return out;
+  }
+
   var _origFetch = window.fetch;
   window.fetch = function () {
     var args = arguments;
@@ -56,31 +95,22 @@
           if (url.indexOf("/manager/graphql") !== -1) {
             var bodyText = typeof init.body === "string" ? init.body : "";
 
-            // EaterReviews list
-            if (bodyText.indexOf("EaterReview") !== -1 && bodyText.indexOf("SubmitReply") === -1) {
+            // Non-submit UE graphql (list, single-review detail, anything else).
+            // Walker is shape-agnostic — finds reviews with replies wherever they
+            // sit in the response.
+            if (bodyText.indexOf("SubmitReply") === -1) {
               var clone2 = resp.clone();
               clone2.json().then(function (json) {
-                var reviews = [];
-                try { reviews = json.data.eaterReviews.reviews || []; } catch (e) {}
-                if (!Array.isArray(reviews)) {
-                  try { reviews = json.data.eaterReviews || []; } catch (e) { reviews = []; }
+                var responded = findUERespondedReviews(json);
+                if (responded.length > 0) {
+                  console.log("[ReEngage Interceptor] Fetch UE graphql scan: found", responded.length, "responded reviews");
+                  window.postMessage({
+                    type: "REENGAGE_PLATFORM_RESPONDED",
+                    platform: "ubereats",
+                    responded: responded,
+                    totalReviews: responded.length
+                  }, "*");
                 }
-                var responded = [];
-                for (var i = 0; i < reviews.length; i++) {
-                  var r = reviews[i];
-                  if (r.reply && r.reply.comment) {
-                    responded.push({
-                      workflowUUID: (r.order && r.order.workflowUUID) || r.uuid || null,
-                      userUUID: r.reply.userUUID || null
-                    });
-                  }
-                }
-                window.postMessage({
-                  type: "REENGAGE_PLATFORM_RESPONDED",
-                  platform: "ubereats",
-                  responded: responded,
-                  totalReviews: reviews.length
-                }, "*");
               }).catch(function () {});
             }
 
@@ -177,28 +207,22 @@
         try {
           var json = JSON.parse(self.responseText);
 
-          // Case 1: EaterReviews list response
-          if (json.data && (json.data.eaterReviews || json.data.getEaterReviews)) {
-            var reviewData = json.data.eaterReviews || json.data.getEaterReviews || {};
-            var reviews = reviewData.reviews || reviewData;
-            if (!Array.isArray(reviews)) reviews = [];
-            var responded = [];
-            for (var i = 0; i < reviews.length; i++) {
-              var r = reviews[i];
-              if (r.reply && r.reply.comment) {
-                responded.push({
-                  workflowUUID: (r.order && r.order.workflowUUID) || r.uuid || null,
-                  userUUID: r.reply.userUUID || null
-                });
-              }
+          // Case 1: Any UE graphql response that isn't a SubmitReply — walk
+          // it to find review objects with replies, wherever they nest.
+          // Catches both the list query and the single-review detail query
+          // without depending on UE's operation naming.
+          var hasSubmitReply = json && json.data && json.data.submitEaterReviewReply;
+          if (!hasSubmitReply) {
+            var responded = findUERespondedReviews(json);
+            if (responded.length > 0) {
+              console.log("[ReEngage Interceptor] XHR UE graphql scan: found", responded.length, "responded reviews");
+              window.postMessage({
+                type: "REENGAGE_PLATFORM_RESPONDED",
+                platform: "ubereats",
+                responded: responded,
+                totalReviews: responded.length
+              }, "*");
             }
-            console.log("[ReEngage Interceptor] XHR UberEats reviews:", reviews.length, "responded:", responded.length);
-            window.postMessage({
-              type: "REENGAGE_PLATFORM_RESPONDED",
-              platform: "ubereats",
-              responded: responded,
-              totalReviews: reviews.length
-            }, "*");
           }
 
           // Case 2: SubmitReply mutation response — reply was just posted

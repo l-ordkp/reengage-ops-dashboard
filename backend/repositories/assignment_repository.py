@@ -70,6 +70,28 @@ def fetch_assignment_by_order_id(order_id: str) -> pd.DataFrame:
     """)
 
 
+def fetch_assignments_by_ids(
+    review_uids: list[str], order_ids: list[str],
+) -> pd.DataFrame:
+    """Bulk lookup of any assignment whose review_uid OR order_id is in the
+    given lists. Used by the observed-responded flow to classify each incoming
+    item as already-completed / pending / new in a single round-trip."""
+    rev_quoted = ", ".join(f"'{_escape_sql(u)}'" for u in review_uids if u)
+    ord_quoted = ", ".join(f"'{_escape_sql(o)}'" for o in order_ids if o)
+    where_clauses = []
+    if rev_quoted:
+        where_clauses.append(f"review_uid IN ({rev_quoted})")
+    if ord_quoted:
+        where_clauses.append(f"order_id IN ({ord_quoted})")
+    if not where_clauses:
+        return pd.DataFrame(columns=["assignment_id", "review_uid", "order_id", "status"])
+    return bq_read(f"""
+        SELECT assignment_id, review_uid, order_id, status
+        FROM `{TABLE_ASSIGNMENTS}`
+        WHERE {' OR '.join(where_clauses)}
+    """)
+
+
 # ── Writes ────────────────────────────────────────────────────────────────────
 
 def insert_assignments(rows: list[dict]) -> None:
@@ -150,6 +172,63 @@ def insert_completed_assignment(
              '{safe_chain_name}', '{safe_platform}', 0, 'completed',
              TIMESTAMP('{now}'), TIMESTAMP('{now}'),
              {reply_id_sql}, {coupon_id_sql})
+    """)
+
+
+def bulk_insert_observed_assignments(
+    items: list[dict], operator_email: str,
+) -> None:
+    """Insert one completed assignment per observed-responded item. Each item:
+    {review_uid, order_id, platform, chain_name}. operator_email is the
+    observer (the operator whose browser captured the platform's signal),
+    not a claim that they replied. The distinguishing remark goes into
+    ops_log, not into the assignment row itself."""
+    if not items:
+        return
+    import uuid
+    now = _now_str()
+    safe_operator_email = _escape_sql(operator_email)
+    value_rows = []
+    for item in items:
+        value_rows.append(
+            f"('{uuid.uuid4()}', '{_escape_sql(item['review_uid'])}', '{_escape_sql(item['order_id'])}', "
+            f"'{safe_operator_email}', '{_escape_sql(item.get('chain_name', ''))}', '{_escape_sql(item['platform'])}', "
+            f"0, 'completed', TIMESTAMP('{now}'), TIMESTAMP('{now}'), NULL, NULL)"
+        )
+    batch_size = 500
+    for start in range(0, len(value_rows), batch_size):
+        batch = value_rows[start:start + batch_size]
+        bq_exec(f"""
+            INSERT INTO `{TABLE_ASSIGNMENTS}`
+                (assignment_id, review_uid, order_id, operator_email,
+                 chain_name, platform, days_left, status, assigned_at, completed_at,
+                 platform_reply_id, platform_coupon_id)
+            VALUES {', '.join(batch)}
+        """)
+
+
+def bulk_complete_pending_by_ids(
+    review_uids: list[str], order_ids: list[str],
+) -> None:
+    """Flip any pending assignments matching the given review_uids or order_ids
+    to status='completed'. Used by the observed-responded flow when an
+    operator was already assigned a review but the platform now reports it
+    replied (merchant self-resolved while operator was prepping, or operator
+    submitted directly via the platform UI bypassing our extension)."""
+    now = _now_str()
+    rev_quoted = ", ".join(f"'{_escape_sql(u)}'" for u in review_uids if u)
+    ord_quoted = ", ".join(f"'{_escape_sql(o)}'" for o in order_ids if o)
+    where_clauses = []
+    if rev_quoted:
+        where_clauses.append(f"review_uid IN ({rev_quoted})")
+    if ord_quoted:
+        where_clauses.append(f"order_id IN ({ord_quoted})")
+    if not where_clauses:
+        return
+    bq_exec(f"""
+        UPDATE `{TABLE_ASSIGNMENTS}`
+        SET status = 'completed', completed_at = TIMESTAMP('{now}')
+        WHERE status = 'pending' AND ({' OR '.join(where_clauses)})
     """)
 
 

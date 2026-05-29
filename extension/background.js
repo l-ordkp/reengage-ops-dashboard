@@ -8,6 +8,12 @@
 // Default API base — can be overridden in popup for local/ngrok testing
 const DEFAULT_API_BASE = "https://reengage-ops-dashboard-v2-ul5ne76yva-uc.a.run.app";
 
+// The observed-responded dedup ledger lives in chrome.storage.local (keyed
+// "observed_seen") so content scripts can read/write it without the access-
+// level dance that chrome.storage.session requires. Storage cost is trivial
+// (~40 bytes per UUID), and the backend's three-state logic is idempotent
+// against any re-sends if the dedup is ever wrong.
+
 // ── Login Automation: Platform configs ──
 const LOGIN_PLATFORM_CONFIG = {
   UBEREATS: {
@@ -339,6 +345,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (!ok) {
             sendResponse({ success: false, error: data.detail || `HTTP ${status}` });
           } else {
+            sendResponse({ success: true, data });
+          }
+        })
+        .catch(err => sendResponse({ success: false, error: err.message }));
+    });
+    return true;
+  }
+
+  // Bulk back-mark reviews the platform itself reports as already replied.
+  // Different endpoint from MARK_RESPONDED — never carries QC, never overwrites
+  // a real submit's metadata on the backend.
+  if (message.type === "OBSERVED_RESPONDED") {
+    const { items } = message;
+    if (!Array.isArray(items) || items.length === 0) {
+      sendResponse({ success: true, data: { processed: 0 } });
+      return true;
+    }
+    Promise.all([getApiBase(), getOperatorEmail()]).then(([apiBase, email]) => {
+      fetch(`${apiBase}/api/extension/observed-responded`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator-Email": email,
+          "ngrok-skip-browser-warning": "true"
+        },
+        body: JSON.stringify({ items })
+      })
+        .then(resp => resp.json().then(data => ({ ok: resp.ok, status: resp.status, data })))
+        .then(({ ok, status, data }) => {
+          if (!ok) {
+            sendResponse({ success: false, error: data.detail || `HTTP ${status}` });
+          } else {
+            console.log(`[ReEngage BG] observed-responded: ${JSON.stringify(data)}`);
             sendResponse({ success: true, data });
           }
         })

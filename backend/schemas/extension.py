@@ -18,3 +18,17 @@ class MarkRespondedBody(BaseModel):
     # + submitEaterReviewReply.promotion.uuid. Empty when not present (e.g. no coupon).
     platform_reply_id: str = ""
     platform_coupon_id: str = ""
+
+
+class ObservedRespondedItem(BaseModel):
+    platform: str  # "Doordash" or "UberEats"
+    # review_uid must align with how fetch_reviews_14d derives it:
+    #   DD → cxReviewId  (review_id in automation_reviews)
+    #   UE → workflowUUID (order_id in automation_reviews; review_id is NULL)
+    review_uid: str
+    order_id: str
+    store_id: str = ""
+
+
+class ObservedRespondedBody(BaseModel):
+    items: list[ObservedRespondedItem]

@@ -72,47 +72,86 @@
       return;
     }
 
-    // Case 2: Reviews list re-fetched with responded reviews
+    // Case 2: Reviews list re-fetched with responded reviews.
+    //
+    // Used to be scoped to "did the currently-open review get a reply?". We
+    // now process the entire batch: any review the platform reports as
+    // replied gets back-marked, even ones the operator never opened. This
+    // shuts the loop where ELT lag re-assigns reviews the merchant has
+    // already solved on the platform. Dedup is persisted in
+    // chrome.storage.local so refreshes/tabs don't re-send the same UUIDs.
     if (event.data?.type !== "REENGAGE_PLATFORM_RESPONDED") return;
 
     const { platform: respPlatform, responded } = event.data;
-    if (!currentDeliveryUuid || !currentReviewData || autoMarkedOrders.has(currentDeliveryUuid)) return;
+    if (!Array.isArray(responded) || responded.length === 0) return;
 
     console.log(`[ReEngage] Intercepted ${responded.length} responded reviews from ${respPlatform}`);
 
-    let matched = false;
+    // Build (review_uid, order_id) pairs aligned with how the dashboard
+    // derives review_uid: DD = cxReviewId, UE = workflowUUID (review_id NULL).
+    const candidates = [];
     for (const r of responded) {
       if (respPlatform === "doordash") {
-        if (r.deliveryUuid === currentDeliveryUuid || r.cxReviewId === currentDeliveryUuid) {
-          matched = true;
-          break;
+        const orderId = r.deliveryUuid || null;
+        const reviewUid = r.cxReviewId || orderId;
+        if (orderId && reviewUid) {
+          candidates.push({
+            platform: "Doordash",
+            review_uid: reviewUid,
+            order_id: orderId,
+            store_id: r.storeId ? String(r.storeId) : "",
+          });
         }
       } else if (respPlatform === "ubereats") {
-        if (r.workflowUUID === currentDeliveryUuid) {
-          matched = true;
-          break;
+        const uuid = r.workflowUUID || null;
+        if (uuid) {
+          candidates.push({
+            platform: "UberEats",
+            review_uid: uuid,
+            order_id: uuid,
+            store_id: r.storeId ? String(r.storeId) : "",
+          });
         }
       }
     }
+    if (candidates.length === 0) return;
 
-    if (matched) {
-      console.log(`[ReEngage] Platform confirmed reply for ${currentDeliveryUuid} — auto-marking`);
-      autoMarkedOrders.add(currentDeliveryUuid);
-      const platformName = respPlatform === "ubereats" ? "UberEats" : "Doordash";
-      chrome.runtime.sendMessage({
-        type: "MARK_RESPONDED",
-        orderId: currentDeliveryUuid,
-        platform: platformName,
-        chainName: currentReviewData.slug || ""
-      }, (result) => {
+    chrome.storage.local.get("observed_seen", (data) => {
+      const seen = data.observed_seen || {};
+      const toSend = [];
+      for (const c of candidates) {
+        if (seen[c.review_uid] || autoMarkedOrders.has(c.review_uid) || autoMarkedOrders.has(c.order_id)) continue;
+        toSend.push(c);
+        seen[c.review_uid] = true;
+      }
+      if (toSend.length === 0) return;
+
+      chrome.runtime.sendMessage({ type: "OBSERVED_RESPONDED", items: toSend }, (result) => {
         if (result && result.success) {
-          console.log(`[ReEngage] Auto-marked ${currentDeliveryUuid} as responded`);
-          showToast("Response verified and logged!");
+          // Persist dedup ONLY after the backend confirms it processed the batch
+          // (a failed request shouldn't burn the UUIDs — we'd want to retry on
+          // the next list refresh).
+          chrome.storage.local.set({ observed_seen: seen });
+          for (const item of toSend) autoMarkedOrders.add(item.review_uid);
+          const summary = result.data || {};
+          console.log(
+            `[ReEngage] observed-responded: sent=${toSend.length} ` +
+            `inserted=${summary.inserted || 0} flipped=${summary.flipped || 0} ` +
+            `skipped=${summary.skipped || 0}`
+          );
+          // If the operator's current review was in the batch and actually
+          // changed state (insert or flip), surface a toast so they know
+          // "this one's already done."
+          if (currentDeliveryUuid && toSend.some(i => i.review_uid === currentDeliveryUuid || i.order_id === currentDeliveryUuid)) {
+            if ((summary.inserted || 0) + (summary.flipped || 0) > 0) {
+              showToast("Already replied on the platform — marked complete.");
+            }
+          }
         } else {
-          console.warn(`[ReEngage] Auto-mark failed:`, result?.error);
+          console.warn(`[ReEngage] observed-responded failed:`, result?.error);
         }
       });
-    }
+    });
   });
 
   // Auto-detect operator email from Chrome profile

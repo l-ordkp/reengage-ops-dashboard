@@ -9,8 +9,9 @@ from fastapi import APIRouter, Header
 from backend.managers.extension_manager import (
     lookup as do_lookup,
     mark_responded as do_mark_responded,
+    observed_responded as do_observed_responded,
 )
-from backend.schemas.extension import MarkRespondedBody
+from backend.schemas.extension import MarkRespondedBody, ObservedRespondedBody
 
 router = APIRouter(prefix="/api/extension", tags=["extension"])
 
@@ -38,4 +39,17 @@ def mark_responded_endpoint(body: MarkRespondedBody, x_operator_email: str = Hea
         exact_match_discount=body.exact_match_discount,
         platform_reply_id=body.platform_reply_id,
         platform_coupon_id=body.platform_coupon_id,
+    )
+
+
+@router.post("/observed-responded")
+def observed_responded_endpoint(
+    body: ObservedRespondedBody, x_operator_email: str = Header(None),
+):
+    """Back-mark reviews the platform itself reports as already replied.
+    Distinct from /mark-responded (which is the operator's own submission)
+    so a stale auto-observation never overwrites real submit metadata."""
+    return do_observed_responded(
+        items=[item.model_dump() for item in body.items],
+        operator_email=x_operator_email or "",
     )
