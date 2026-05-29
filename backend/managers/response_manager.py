@@ -23,7 +23,7 @@ You are an AI assistant for a restaurant chain for online orders, responding to 
 - **Customer Name:** {customer_name}
 - **Review Rating:** {rating_display}
 - **Review Feedback:** {review_text}
-- **Coupon Given:** ${coupon} (will be "None" if not applicable)
+- **Coupon to include:** {coupon_display}
 {item_reviews_point}
 {items_point}
 
@@ -42,9 +42,19 @@ You are an AI assistant for a restaurant chain for online orders, responding to 
 - For a **neutral** review (3 stars): Acknowledge feedback.
 - For a **negative** review (Didn't like, or 1-2 stars): Apologize genuinely.
 
-### **Coupon Guidelines**
-- If coupon is "None", "0", "$0", empty, or zero -> DO NOT mention any coupon
-- **If coupon is a positive number -> YOU MUST include it naturally in your response**
+### **Coupon Guidelines (STRICT)**
+- If the **Coupon to include** line says "NO COUPON":
+  - You MUST NOT mention any dollar amount anywhere in the reply.
+  - You MUST NOT use the words "discount", "coupon", "credit", "voucher",
+    "off your", "save", "deal", "promo", or any similar promotional
+    language.
+  - Do NOT invent a small token amount like "$0.50", "$1", or "$2" — the
+    customer receives nothing.
+- If the **Coupon to include** line shows a positive dollar amount
+  (e.g. "$5"):
+  - You MUST include that exact dollar amount in the response, written
+    with the "$" symbol and the same number (e.g. "$5").
+  - Frame it naturally as a discount or credit on their next order.
 
 ### **Item Reference Guidelines**
 - When Review Feedback is empty AND Item Ordered is provided, you MUST
@@ -69,10 +79,8 @@ You are an AI assistant for a restaurant chain for online orders, responding to 
 - Keep it concise but meaningful.
 - Ensure the response is final and requires no manual edits.
 
-### **Final Reminder Before You Reply**
-**If coupon is a positive number -> YOU MUST include it naturally in your response.**
-
-Now, generate a response following these guidelines.
+Now, generate a response following these guidelines. Output only the
+reply text — no preamble, no explanation, no sign-off block.
 """
 
 
@@ -197,20 +205,38 @@ def find_matching_config(review: dict, configs: list[dict]) -> Optional[dict]:
 
 # ── Generation ───────────────────────────────────────────────────────────────
 
+_COUPON_LANGUAGE_RE = re.compile(
+    r"\b(discount|coupon|credit|voucher|off\s+your|promo|save|deal)\b",
+    re.IGNORECASE,
+)
+
+
 def _validate(response: str, review: dict, coupon: str) -> Optional[str]:
     errors = []
     customer_name = review.get("customer_name")
     if customer_name and response and customer_name not in response:
         errors.append("Customer name not found in response")
-    if response and "$0" in response:
-        errors.append("$0 coupon is found in response")
-    if coupon and coupon not in ("None", "0"):
-        if response and f"${coupon}" not in response:
-            errors.append(f"Coupon value ${coupon} not found in response")
+
+    no_coupon = coupon in ("None", "0", "", "0.0") or not coupon
+    if response:
+        if no_coupon:
+            # Any $-amount or coupon-style word is hallucination when no
+            # coupon was configured.
+            if re.search(r"\$\d", response):
+                errors.append("Response contains a $-amount but no coupon was configured")
+            if _COUPON_LANGUAGE_RE.search(response):
+                errors.append("Response uses coupon language but no coupon was configured")
+        else:
+            if f"${coupon}" not in response:
+                errors.append(f"Coupon value ${coupon} not found in response")
+
     if review.get("platform") == "Doordash" and response:
         if re.search(r"\bstars?\b", response, re.IGNORECASE):
             errors.append("DoorDash response mentions 'star' — disallowed")
     return "|".join(errors) if errors else None
+
+
+MAX_ATTEMPTS = 3
 
 
 def _call_openai(review: dict, config: dict, coupon_value: float) -> Tuple[str, Optional[str]]:
@@ -223,6 +249,10 @@ def _call_openai(review: dict, config: dict, coupon_value: float) -> Tuple[str, 
     if coupon_value and coupon_value > 0:
         coupon_str = str(int(coupon_value)) if float(coupon_value).is_integer() else str(coupon_value)
 
+    # coupon_display is what the model literally sees. "NO COUPON" / "$5" is
+    # much harder for the model to misinterpret than the old "$None" string.
+    coupon_display = f"${coupon_str}" if coupon_str != "None" else "NO COUPON"
+
     items_point = ""
     item_reviews_point = ""
     if review.get("items"):
@@ -234,22 +264,50 @@ def _call_openai(review: dict, config: dict, coupon_value: float) -> Tuple[str, 
         platform=review.get("platform", "Unknown"),
         tone=tone, customer_name=review.get("customer_name", "Customer"),
         rating_display=rating_display, review_text=review.get("review_text", ""),
-        coupon=coupon_str, item_reviews_point=item_reviews_point,
+        coupon_display=coupon_display, item_reviews_point=item_reviews_point,
         items_point=items_point, char_limit=char_limit,
     )
 
+    # Multi-turn retry: when an attempt fails char-limit or validator, feed
+    # the failed text + the specific failure reasons back as conversation
+    # context so the next attempt can correct itself rather than starting
+    # blind. Shared budget (MAX_ATTEMPTS) across both failure modes.
+    messages = [{"role": "user", "content": prompt}]
     response_text = ""
-    for _ in range(3):
+    errors: Optional[str] = None
+    for attempt in range(MAX_ATTEMPTS):
         resp = client.chat.completions.create(
-            model="gpt-4.1-nano", temperature=0.7,
-            messages=[{"role": "user", "content": prompt}],
+            model="gpt-4.1-nano", temperature=0.7, messages=messages,
         )
         response_text = resp.choices[0].message.content.strip()
-        if len(response_text) <= char_limit:
+        length_ok = len(response_text) <= char_limit
+        errors = _validate(response_text, review, coupon_str)
+        if length_ok and not errors:
             break
-        time.sleep(1)
+
+        # Build feedback for next attempt
+        problems: list[str] = []
+        if not length_ok:
+            problems.append(
+                f"Length was {len(response_text)} chars; the limit is {char_limit}. "
+                f"Shorten the reply."
+            )
+        if errors:
+            problems.append(f"Validation errors: {errors}")
+        feedback = (
+            "Your previous reply did NOT meet the rules:\n- "
+            + "\n- ".join(problems)
+            + "\n\nGenerate the entire reply again from scratch, fixing every "
+            "issue above. Output only the reply text — no preamble, no "
+            "explanation, no sign-off."
+        )
+        messages.append({"role": "assistant", "content": response_text})
+        messages.append({"role": "user", "content": feedback})
+        if attempt < MAX_ATTEMPTS - 1:
+            time.sleep(1)
 
     response_text = response_text[:char_limit]
+    # Final validator pass after potential truncation
     errors = _validate(response_text, review, coupon_str)
     return response_text, errors
 
