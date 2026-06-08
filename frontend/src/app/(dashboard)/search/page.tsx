@@ -21,6 +21,10 @@ export default function SearchPage() {
   const [idValue, setIdValue] = useState("");
   const [customerName, setCustomerName] = useState("");
   const [chain, setChain] = useState("");
+  const [platform, setPlatform] = useState("");
+  const [status, setStatus] = useState("");
+  const [priority, setPriority] = useState("");
+  const [hasResponse, setHasResponse] = useState("");
   const [results, setResults] = useState<Review[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
@@ -45,8 +49,12 @@ export default function SearchPage() {
         params.query = idValue.trim();
       } else {
         params.customer_name = customerName.trim();
-        if (chain) params.chain_name = chain;
       }
+      if (chain) params.chain_name = chain;
+      if (platform) params.platform = platform;
+      if (status) params.status = status;
+      if (priority) params.priority = priority;
+      if (hasResponse) params.has_response = hasResponse;
       const { data } = await api.get("/api/reviews/search", { params });
       setResults(Array.isArray(data) ? data : []);
     } catch (err: any) {
@@ -56,6 +64,16 @@ export default function SearchPage() {
       setLoading(false);
     }
   }
+
+  function clearFilters() {
+    setChain("");
+    setPlatform("");
+    setStatus("");
+    setPriority("");
+    setHasResponse("");
+  }
+
+  const activeFilterCount = [chain, platform, status, priority, hasResponse].filter(Boolean).length;
 
   return (
     <div className="space-y-6">
@@ -72,12 +90,12 @@ export default function SearchPage() {
         </label>
         <label className="flex items-center gap-2 cursor-pointer">
           <input type="radio" name="mode" checked={mode === "by_customer"} onChange={() => setMode("by_customer")} className="accent-blue-500" />
-          <span className="text-sm text-gray-300">By Customer Name + Chain</span>
+          <span className="text-sm text-gray-300">By Customer Name</span>
         </label>
       </div>
 
       {/* Search Inputs */}
-      <div className="bg-[#262730] rounded-lg border border-gray-800 p-5">
+      <div className="bg-[#262730] rounded-lg border border-gray-800 p-5 space-y-4">
         {mode === "by_id" ? (
           <div className="flex flex-wrap gap-3 items-end">
             <div>
@@ -112,14 +130,6 @@ export default function SearchPage() {
                 placeholder="Customer name..."
                 className="w-full bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-2" />
             </div>
-            <div>
-              <label className="text-xs text-gray-400 block mb-1">Chain</label>
-              <select value={chain} onChange={(e) => setChain(e.target.value)}
-                className="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-2">
-                <option value="">All Chains</option>
-                {(filterOpts?.chains || []).map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
             <button onClick={handleSearch} disabled={!customerName.trim() || loading}
               className="flex items-center gap-2 px-4 py-2 bg-[#FF4B4B] hover:bg-[#E04343] text-white text-sm font-medium rounded-lg disabled:opacity-50 cursor-pointer">
               <FiSearch size={15} />
@@ -127,6 +137,36 @@ export default function SearchPage() {
             </button>
           </div>
         )}
+
+        {/* Filters — narrow results before the text/ID match runs */}
+        <div className="pt-3 border-t border-gray-800">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs text-gray-400 uppercase tracking-wide">
+              Filters {activeFilterCount > 0 && <span className="text-gray-500 normal-case tracking-normal">({activeFilterCount} active)</span>}
+            </p>
+            {activeFilterCount > 0 && (
+              <button onClick={clearFilters}
+                className="text-xs text-gray-400 hover:text-gray-200 cursor-pointer">
+                Clear
+              </button>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <SearchFilterSelect label="Chain" value={chain} options={filterOpts?.chains || []} onChange={setChain} />
+            <SearchFilterSelect label="Platform" value={platform} options={filterOpts?.platforms || []} onChange={setPlatform} />
+            <SearchFilterSelect label="Status" value={status} options={["PENDING", "RESPONDED", "EXPIRED"]} onChange={setStatus} />
+            <SearchFilterSelect label="Priority" value={priority} options={["CRITICAL", "URGENT", "NORMAL"]} onChange={setPriority} />
+            <select value={hasResponse} onChange={(e) => setHasResponse(e.target.value)}
+              className="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500">
+              <option value="">Any Response</option>
+              <option value="true">Has Response</option>
+              <option value="false">No Response</option>
+            </select>
+          </div>
+          <p className="text-xs text-gray-500 mt-2">
+            Filters narrow the 14-day set before searching. For ID searches, the 90-day fallback runs only when no filters are applied.
+          </p>
+        </div>
       </div>
 
       {/* Error */}
@@ -227,6 +267,23 @@ export default function SearchPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function SearchFilterSelect({
+  label, value, options, onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}
+      className="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500">
+      <option value="">All {label}</option>
+      {options.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+    </select>
   );
 }
 

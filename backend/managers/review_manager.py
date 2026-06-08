@@ -103,13 +103,23 @@ def search_reviews(
     query: Optional[str] = None,
     customer_name: Optional[str] = None,
     chain_name: Optional[str] = None,
+    platform: Optional[str] = None,
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    has_response: Optional[str] = None,
 ) -> list[dict]:
     """
     Search by ID field or by customer name + chain.
     Falls back to a 90-day BQ query for historical IDs not found in the 14-day cache.
+    Filters (chain/platform/status/priority/has_response) are applied to the 14-day
+    set *before* the text match so the substring scan and downstream enrichment
+    only run over the narrowed slice. They do not apply to the 90-day fallback.
     Enriches results with assignment info + QC match from ops_log.
     """
     df = fetch_reviews_14d()
+    df = _apply_filters(df, chain_name=chain_name, platform=platform,
+                        status=status, priority=priority,
+                        has_response=has_response)
     results = pd.DataFrame()
 
     if field and query:
@@ -121,15 +131,18 @@ def search_reviews(
         if results.empty:
             results = df[df[field].astype(str).str.contains(query.strip(), na=False, case=False)]
 
-        # Fallback: search historical 90-day window for IDs
-        if results.empty and field in ("order_id", "review_uid", "review_id", "customer_id"):
+        # Fallback: search historical 90-day window for IDs (only when no
+        # narrowing filters were supplied — otherwise the 90d hit may not
+        # satisfy the filters and we'd surface a misleading row).
+        no_extra_filters = not any([platform, status, priority, has_response])
+        if (results.empty and no_extra_filters
+                and field in ("order_id", "review_uid", "review_id", "customer_id")):
             results = _search_historical_by_id(field, query.strip())
 
     elif customer_name:
-        subset = df if not chain_name or chain_name == "All" else df[df["chain_name"] == chain_name]
-        mask = subset["customer_name"].astype(str).str.lower().str.contains(
+        mask = df["customer_name"].astype(str).str.lower().str.contains(
             customer_name.strip().lower(), na=False)
-        results = subset[mask]
+        results = df[mask]
     else:
         return []
 
@@ -139,6 +152,31 @@ def search_reviews(
     _enrich_with_assignments(review_results)
     _enrich_with_qc(review_results)
     return review_results
+
+
+def _apply_filters(
+    df: pd.DataFrame,
+    *,
+    chain_name: Optional[str] = None,
+    platform: Optional[str] = None,
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    has_response: Optional[str] = None,
+) -> pd.DataFrame:
+    """Narrow the 14-day frame by the same filter set the list endpoint uses."""
+    if chain_name and chain_name != "All":
+        df = df[df["chain_name"] == chain_name]
+    if platform and platform != "All":
+        df = df[df["platform"] == platform]
+    if status and status != "All":
+        df = df[df["status"] == status]
+    if priority and priority != "All":
+        df = df[df["priority"] == priority]
+    if has_response == "true":
+        df = df[df["response_text"].notna()]
+    elif has_response == "false":
+        df = df[df["response_text"].isna()]
+    return df
 
 
 def _search_historical_by_id(field: str, query: str) -> pd.DataFrame:

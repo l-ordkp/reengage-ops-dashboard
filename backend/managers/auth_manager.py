@@ -28,8 +28,11 @@ def login_with_google(code: str, redirect_uri: str) -> dict:
     """
     from fastapi import HTTPException
 
-    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
-    client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+    from backend.clients.secret_manager import (
+        get_google_oauth_client_id, get_google_oauth_client_secret,
+    )
+    client_id = get_google_oauth_client_id()
+    client_secret = get_google_oauth_client_secret()
     user_info = exchange_google_code(code, client_id, client_secret, redirect_uri)
     if not user_info or not user_info.get("email"):
         raise HTTPException(status_code=401, detail="Google auth failed")

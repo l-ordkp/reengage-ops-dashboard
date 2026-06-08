@@ -51,10 +51,18 @@ def search_endpoint(
     query: Optional[str] = None,
     customer_name: Optional[str] = None,
     chain_name: Optional[str] = None,
+    platform: Optional[str] = None,
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    has_response: Optional[str] = None,
     user: dict = Depends(require_lead),
 ):
-    return search_reviews(field=field, query=query,
-                          customer_name=customer_name, chain_name=chain_name)
+    return search_reviews(
+        field=field, query=query,
+        customer_name=customer_name, chain_name=chain_name,
+        platform=platform, status=status, priority=priority,
+        has_response=has_response,
+    )
 
 
 @router.post("/generate-batch")
