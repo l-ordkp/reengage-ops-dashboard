@@ -9,6 +9,7 @@ import json
 import sys
 
 from backend.managers.assignment_manager import run_assignment
+from backend.managers.throughput_notifier import send_yesterday_throughput
 
 
 def main():
@@ -19,6 +20,9 @@ def main():
         sys.exit(1)
 
     print(f"\nAssignment complete: {result.get('assigned', 0)} reviews assigned")
+
+    send_yesterday_throughput()
+
     return result
 
 

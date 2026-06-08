@@ -45,3 +45,7 @@ def get_google_oauth_client_secret() -> str:
 def get_jwt_secret_key() -> str:
     val = _get_secret("JWT_SECRET_KEY", "reengage-v2-jwt-secret")
     return val or "dev-secret-change-in-prod"
+
+
+def get_slack_bot_token() -> str:
+    return _get_secret("SLACK_BOT_TOKEN", "reengage-slack-bot")
