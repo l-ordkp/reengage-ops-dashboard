@@ -27,6 +27,16 @@ You are an AI assistant for a restaurant chain for online orders, responding to 
 {item_reviews_point}
 {items_point}
 
+### **Language Requirement (CRITICAL)**
+- ALWAYS reply in **English (US)** — no exceptions.
+- This applies even if the customer wrote their review in another language
+  (Spanish, French, Portuguese, Chinese, etc.). DoorDash and UberEats
+  community guidelines reject non-English merchant replies, and a
+  non-English reply will be blocked by the platform.
+- Do NOT translate the customer's text or echo non-English words. Address
+  the customer normally in English using their name.
+- The only non-English token allowed is the customer's own name as given.
+
 ### **Platform Vocabulary (CRITICAL)**
 - If Platform is "Doordash", the rating system is **Loved / Liked / Didn't like**.
   NEVER use the word "star" or "stars" anywhere in the response. Do not say
@@ -210,6 +220,51 @@ _COUPON_LANGUAGE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Hard signals that the reply isn't English: inverted Spanish punctuation,
+# tilde-n, and any character from CJK / Hiragana-Katakana / Hangul / Cyrillic
+# / Arabic / Devanagari blocks. These never appear in legitimate English
+# replies, so a single match is enough to fail.
+_NON_ENGLISH_CHAR_RE = re.compile(
+    r"[¡¿Ññ"           # ¡ ¿ Ñ ñ
+    r"一-鿿"                       # CJK Unified Ideographs
+    r"぀-ヿ"                       # Hiragana + Katakana
+    r"가-힯"                       # Hangul syllables
+    r"Ѐ-ӿ"                       # Cyrillic
+    r"؀-ۿ"                       # Arabic
+    r"ऀ-ॿ]"                      # Devanagari
+)
+
+# High-confidence non-English function words. These are common in
+# Spanish / French / Portuguese AI replies and either don't exist in
+# English or aren't plausible in a short merchant reply. Two or more
+# matches → almost certainly not English.
+_NON_ENGLISH_TOKENS = {
+    # Spanish
+    "lamentamos", "lamento", "agradecemos", "gracias", "disculpa",
+    "disculpas", "esforzamos", "esperamos", "estimado", "estimada",
+    "experiencia", "comentario", "comentarios", "retroalimentacion",
+    "retroalimentación", "brindar", "buena", "buenas", "hemos", "haya",
+    "haber", "nuestro", "nuestra", "nuestros", "nuestras", "sentimos",
+    "esperando", "encantados", "amablemente", "valoramos", "tomamos",
+    # French
+    "désolé", "désolée", "merci", "bonjour", "nous", "regrette",
+    "regrettons", "veuillez", "votre", "vôtre",
+    # Portuguese
+    "obrigado", "obrigada", "agradeço", "lamento", "lamentamos",
+    "experiência", "comentário", "nossa", "nosso",
+}
+_TOKEN_RE = re.compile(r"[A-Za-zÀ-ÿ]+")
+
+
+def _looks_non_english(text: str) -> bool:
+    if not text:
+        return False
+    if _NON_ENGLISH_CHAR_RE.search(text):
+        return True
+    tokens = [t.lower() for t in _TOKEN_RE.findall(text)]
+    hits = sum(1 for t in tokens if t in _NON_ENGLISH_TOKENS)
+    return hits >= 2
+
 
 def _validate(response: str, review: dict, coupon: str) -> Optional[str]:
     errors = []
@@ -233,6 +288,11 @@ def _validate(response: str, review: dict, coupon: str) -> Optional[str]:
     if review.get("platform") == "Doordash" and response:
         if re.search(r"\bstars?\b", response, re.IGNORECASE):
             errors.append("DoorDash response mentions 'star' — disallowed")
+    if response and _looks_non_english(response):
+        errors.append(
+            "Response appears to be in a non-English language — must be "
+            "written in English regardless of the customer's language"
+        )
     return "|".join(errors) if errors else None
 
 
