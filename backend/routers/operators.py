@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends
 
 from backend.auth.dependencies import require_lead
 from backend.managers.operator_manager import (
-    get_chain_breakdown, get_daily_breakdown, get_daily_loop_completed,
-    get_performance, get_qc_mismatches, get_qc_summary,
+    get_chain_breakdown, get_daily_breakdown, get_daily_ingested,
+    get_daily_loop_completed, get_performance, get_qc_mismatches, get_qc_summary,
 )
 from backend.managers.queue_manager import get_my_queue
 
@@ -38,6 +38,12 @@ def chain_breakdown(operator_email: Optional[str] = None, user: dict = Depends(r
 def daily_loop_completed(user: dict = Depends(require_lead)):
     """14-day Loop-completed timeseries (one point per day, CST)."""
     return get_daily_loop_completed()
+
+
+@router.get("/daily-ingested")
+def daily_ingested(user: dict = Depends(require_lead)):
+    """14-day timeseries of distinct reviews first entering assignments per IST day."""
+    return get_daily_ingested()
 
 
 @router.get("/qc-summary")

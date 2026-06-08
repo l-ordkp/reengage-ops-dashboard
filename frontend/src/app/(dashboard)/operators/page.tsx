@@ -7,10 +7,12 @@ import { useAuth } from "@/providers/AuthProvider";
 import {
   useOperatorPerformance,
   useDailyBreakdown,
+  useDailyIngested,
   useDailyLoopCompleted,
   useOperatorQueue,
   useQCMismatches,
   useQCSummary,
+  type DailyIngested,
   type DailyLoopCompleted,
 } from "@/hooks/useOperators";
 import type { OperatorPerformance, DailyBreakdown, Review } from "@/lib/types";
@@ -20,6 +22,7 @@ export default function OperatorsPage() {
   const { isLead } = useAuth();
   const { data: perfData, isLoading: perfLoading } = useOperatorPerformance();
   const { data: dailyLoopData } = useDailyLoopCompleted();
+  const { data: dailyIngestedData } = useDailyIngested();
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [dailyOperatorFilter, setDailyOperatorFilter] = useState("");
@@ -86,8 +89,12 @@ export default function OperatorsPage() {
         ))}
       </div>
 
-      {/* Daily Loop-completed chart (14 days, from assignments.completed_at) */}
-      <DailyLoopChart data={dailyLoopData || []} />
+      {/* Daily Loop-completed (bars) overlaid with daily ingested (line).
+          Lets a lead eyeball whether the team is keeping pace with intake. */}
+      <DailyLoopChart
+        data={dailyLoopData || []}
+        ingested={dailyIngestedData || []}
+      />
 
       {/* Performance table */}
       <div>
@@ -481,18 +488,31 @@ export default function OperatorsPage() {
   );
 }
 
-// Daily Loop-completed bar chart (last 14 days). Bars only — single series.
-// Source: assignments.completed_at, so this counts each Loop-replied review
-// once regardless of when the original review was submitted.
-function DailyLoopChart({ data }: { data: DailyLoopCompleted[] }) {
+// Daily Loop-completed (bars) + Daily ingested (line) for last 14 days.
+// Bars: assignments.completed_at — each Loop-replied review counted once.
+// Line: MIN(assigned_at) per review_uid — each review counted once on the
+// day it first entered the assignment system. Line above bars = backlog
+// growing; line at/below bars = team is keeping up. Both series get a
+// dashed average reference line.
+function DailyLoopChart({
+  data,
+  ingested,
+}: {
+  data: DailyLoopCompleted[];
+  ingested: DailyIngested[];
+}) {
   if (data.length === 0) {
     return (
       <div className="bg-[#262730] rounded-lg p-4 h-48 animate-pulse" />
     );
   }
-  const max = Math.max(1, ...data.map((d) => d.loop_completed));
+  const ingestedByDate = new Map(ingested.map((i) => [i.date, i.ingested]));
+  const ingestedSeries = data.map((d) => ingestedByDate.get(d.date) ?? 0);
+  const max = Math.max(1, ...data.map((d) => d.loop_completed), ...ingestedSeries);
   const avg = Math.round(data.reduce((s, d) => s + d.loop_completed, 0) / data.length);
   const total = data.reduce((s, d) => s + d.loop_completed, 0);
+  const ingestedTotal = ingestedSeries.reduce((s, v) => s + v, 0);
+  const ingestedAvg = Math.round(ingestedTotal / data.length);
 
   const W = 760;
   const H = 220;
@@ -515,21 +535,34 @@ function DailyLoopChart({ data }: { data: DailyLoopCompleted[] }) {
 
   return (
     <div className="bg-[#262730] rounded-lg p-4 border border-gray-800">
-      <div className="flex items-baseline justify-between mb-3">
+      <div className="flex items-baseline justify-between mb-3 gap-4">
         <div>
-          <h2 className="text-lg font-semibold">Daily Loop Completed</h2>
+          <h2 className="text-lg font-semibold">Daily Loop: Ingested vs Completed</h2>
           <p className="text-xs text-gray-400">
-            Last 14 days · grouped by completion date in IST (operator workday)
+            Last 14 days · IST. Bars = completed (completed_at).
+            Line = newly ingested (first day in assignments).
           </p>
+          <div className="flex gap-4 mt-2 text-xs">
+            <span className="flex items-center gap-1.5 text-gray-300">
+              <span className="inline-block w-3 h-3 rounded-sm bg-[#a78bfa]" /> Completed
+            </span>
+            <span className="flex items-center gap-1.5 text-gray-300">
+              <span className="inline-block w-3 h-0.5 bg-[#38bdf8]" /> Ingested
+            </span>
+          </div>
         </div>
         <div className="text-right text-xs text-gray-400">
           <div>
-            <span className="text-gray-500">14d total</span>{" "}
+            <span className="text-gray-500">completed 14d</span>{" "}
             <span className="text-white font-semibold">{total.toLocaleString()}</span>
+            <span className="text-gray-500"> · avg/day </span>
+            <span className="text-white font-semibold">{avg.toLocaleString()}</span>
           </div>
           <div>
-            <span className="text-gray-500">avg/day</span>{" "}
-            <span className="text-white font-semibold">{avg.toLocaleString()}</span>
+            <span className="text-gray-500">ingested 14d</span>{" "}
+            <span className="text-white font-semibold">{ingestedTotal.toLocaleString()}</span>
+            <span className="text-gray-500"> · avg/day </span>
+            <span className="text-white font-semibold">{ingestedAvg.toLocaleString()}</span>
           </div>
         </div>
       </div>
@@ -554,7 +587,7 @@ function DailyLoopChart({ data }: { data: DailyLoopCompleted[] }) {
             </g>
           );
         })}
-        {/* bars */}
+        {/* bars: completed */}
         {data.map((d, i) => {
           const x = padL + slot * i + (slot - barW) / 2;
           const h = (d.loop_completed / max) * innerH;
@@ -583,7 +616,7 @@ function DailyLoopChart({ data }: { data: DailyLoopCompleted[] }) {
             </g>
           );
         })}
-        {/* avg reference line */}
+        {/* avg reference line — completed */}
         <line
           x1={padL} y1={padT + innerH * (1 - avg / max)}
           x2={W - padR} y2={padT + innerH * (1 - avg / max)}
@@ -593,8 +626,42 @@ function DailyLoopChart({ data }: { data: DailyLoopCompleted[] }) {
           x={W - padR - 4} y={padT + innerH * (1 - avg / max) - 4}
           textAnchor="end" fontSize="10" fill="#f59e0b"
         >
-          avg {avg.toLocaleString()}
+          avg completed {avg.toLocaleString()}
         </text>
+        {/* avg reference line — ingested */}
+        <line
+          x1={padL} y1={padT + innerH * (1 - ingestedAvg / max)}
+          x2={W - padR} y2={padT + innerH * (1 - ingestedAvg / max)}
+          stroke="#38bdf8" strokeWidth="1" strokeDasharray="4,3"
+        />
+        <text
+          x={padL + 4} y={padT + innerH * (1 - ingestedAvg / max) - 4}
+          textAnchor="start" fontSize="10" fill="#38bdf8"
+        >
+          avg ingested {ingestedAvg.toLocaleString()}
+        </text>
+        {/* ingested line — one point per day, centered on the bar slot */}
+        <polyline
+          fill="none"
+          stroke="#38bdf8"
+          strokeWidth="2"
+          points={data
+            .map((_, i) => {
+              const cx = padL + slot * i + slot / 2;
+              const cy = padT + (innerH - (ingestedSeries[i] / max) * innerH);
+              return `${cx},${cy}`;
+            })
+            .join(" ")}
+        />
+        {data.map((d, i) => {
+          const cx = padL + slot * i + slot / 2;
+          const cy = padT + (innerH - (ingestedSeries[i] / max) * innerH);
+          return (
+            <circle key={`ing-${d.date}`} cx={cx} cy={cy} r={3} fill="#38bdf8">
+              <title>{`${d.date}: ${ingestedSeries[i].toLocaleString()} ingested`}</title>
+            </circle>
+          );
+        })}
       </svg>
     </div>
   );

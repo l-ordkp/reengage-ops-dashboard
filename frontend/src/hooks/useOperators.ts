@@ -109,6 +109,21 @@ export function useDailyLoopCompleted() {
   });
 }
 
+export interface DailyIngested {
+  date: string;
+  ingested: number;
+}
+
+export function useDailyIngested() {
+  return useQuery<DailyIngested[]>({
+    queryKey: ["daily-ingested"],
+    queryFn: async () => {
+      const { data } = await api.get("/api/operators/daily-ingested");
+      return data;
+    },
+  });
+}
+
 export function useOperatorQueue(email?: string) {
   return useQuery<OperatorQueueResponse>({
     queryKey: ["operator-queue", email],

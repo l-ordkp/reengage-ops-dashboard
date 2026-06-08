@@ -84,6 +84,43 @@ def fetch_daily_loop_completed_14d() -> pd.DataFrame:
 
 
 @cached(ttl=300)
+def fetch_daily_ingested_14d() -> pd.DataFrame:
+    """One row per IST calendar day, last 14 days, with the count of distinct
+    reviews that first entered the assignment system that day. "First entered"
+    means MIN(assigned_at) per review_uid — the daily 8 AM IST cron INSERTs a
+    fresh row on every rebuild, so the earliest assigned_at is the first time
+    the review was surfaced to operators. Densified — days with zero ingested
+    still appear as 0 so the chart aligns 1:1 with daily-loop-completed.
+    """
+    return bq_read(f"""
+        WITH days AS (
+            SELECT DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL n DAY) AS d
+            FROM UNNEST(GENERATE_ARRAY(0, 13)) AS n
+        ),
+        first_seen AS (
+            SELECT review_uid, MIN(assigned_at) AS first_assigned_at
+            FROM `{TABLE_ASSIGNMENTS}`
+            GROUP BY review_uid
+        ),
+        ingested AS (
+            SELECT
+                DATE(first_assigned_at, 'Asia/Kolkata') AS d,
+                COUNT(*) AS ingested
+            FROM first_seen
+            WHERE DATE(first_assigned_at, 'Asia/Kolkata')
+                  >= DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 13 DAY)
+            GROUP BY d
+        )
+        SELECT
+            days.d AS date,
+            COALESCE(ingested.ingested, 0) AS ingested
+        FROM days
+        LEFT JOIN ingested USING (d)
+        ORDER BY date ASC
+    """)
+
+
+@cached(ttl=300)
 def fetch_operator_chain_breakdown_14d() -> pd.DataFrame:
     """Per-operator, per-chain-platform metrics (last 14 IST days)."""
     return bq_read(f"""
