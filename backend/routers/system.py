@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 import jwt
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
 from backend.auth.dependencies import ALGORITHM, SECRET_KEY, get_current_user
 from backend.enums.role import LEAD_ROLES
@@ -18,7 +18,6 @@ router = APIRouter(prefix="/api/system", tags=["system"])
 @router.post("/run-assignment")
 def trigger_assignment(
     body: RunAssignmentBody,
-    background_tasks: BackgroundTasks,
     user_agent: str = Header(None),
     authorization: str = Header(None),
 ):
@@ -37,8 +36,12 @@ def trigger_assignment(
 
     result = run_assignment(full_reassign=body.full_reassign)
 
+    # Synchronous (not BackgroundTasks): if the response gets cut by an
+    # upstream timeout, BackgroundTasks may never fire. The Slack call
+    # itself is wrapped in try/except inside the notifier, so a Slack
+    # outage cannot fail the cron.
     if is_cron and "error" not in result:
-        background_tasks.add_task(send_yesterday_throughput)
+        send_yesterday_throughput()
 
     return result
 
