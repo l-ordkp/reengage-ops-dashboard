@@ -7,6 +7,7 @@ import {
   FiInbox,
   FiList,
   FiActivity,
+  FiBarChart2,
   FiSettings,
   FiClipboard,
   FiSearch,
@@ -39,6 +40,7 @@ const operatorItems: NavItem[] = [
 const leadItems: NavItem[] = [
   { href: "/reviews", label: "All Reviews", icon: <FiList size={18} /> },
   { href: "/chain-health", label: "Chain Health", icon: <FiActivity size={18} /> },
+  { href: "/chain-value", label: "Chain Value", icon: <FiBarChart2 size={18} /> },
   { href: "/configs", label: "Response Config", icon: <FiSettings size={18} /> },
   { href: "/search", label: "Search Review", icon: <FiSearch size={18} /> },
   { href: "/operators", label: "Operators", icon: <FiUsers size={18} /> },

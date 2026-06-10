@@ -64,6 +64,7 @@ from backend.routers import (
     users,
     operators,
     chain_health,
+    chain_value,
     configs,
     ops_log,
     system,
@@ -89,6 +90,7 @@ app.include_router(assignments.router)
 app.include_router(users.router)
 app.include_router(operators.router)
 app.include_router(chain_health.router)
+app.include_router(chain_value.router)
 app.include_router(configs.router)
 app.include_router(ops_log.router)
 app.include_router(system.router)

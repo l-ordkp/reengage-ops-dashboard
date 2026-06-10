@@ -252,3 +252,117 @@ def fetch_chain_totals_14d() -> pd.DataFrame:
           )
         GROUP BY 1
     """)
+
+
+@cached(ttl=300)
+def fetch_managed_chains() -> list[str]:
+    """Distinct chain names that ReEngage actively manages (≥1 non-paused config row)."""
+    df = bq_read(f"""
+        SELECT DISTINCT chain_name
+        FROM `{TABLE_REVIEW_RESPONSE_CFG}`
+        WHERE paused = FALSE AND chain_name IS NOT NULL
+        ORDER BY chain_name
+    """)
+    return df["chain_name"].dropna().tolist() if not df.empty else []
+
+
+@cached(ttl=300)
+def fetch_chain_value(
+    chain: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """All-time (or date-bounded) waterfall for a chain: total reviews,
+    in-scope, responded, Loop-responded — per platform plus an 'ALL' rollup.
+    Uses the new assignments table as the primary Loop-reply source, with
+    the legacy automation_reviews.is_loop_replied flag as a fallback for
+    pre-dashboard history (correct-when-TRUE, just incomplete on the old
+    pipeline). Dates filter on the review's event_timestamp; end_date is
+    inclusive of the full day.
+    """
+    safe_chain = (chain or "").replace("'", "''")
+    date_filter = ""
+    if start_date:
+        date_filter += (
+            f" AND COALESCE(ar.review_timestamp, ar.order_timestamp) "
+            f">= TIMESTAMP('{start_date}')"
+        )
+    if end_date:
+        date_filter += (
+            f" AND COALESCE(ar.review_timestamp, ar.order_timestamp) "
+            f"< TIMESTAMP_ADD(TIMESTAMP('{end_date}'), INTERVAL 1 DAY)"
+        )
+    return bq_read(f"""
+    WITH loop_completed AS (
+      SELECT DISTINCT order_id AS completed_id
+      FROM `{TABLE_ASSIGNMENTS}`
+      WHERE status = 'completed'
+    ),
+    deduped_reviews AS (
+      SELECT
+        ar.review_id, ar.order_id, ar.slug, ar.platform,
+        ar.is_replied, ar.star_rating, ar.rating_value,
+        SAFE_CAST(ar.orders_count AS INT64) AS orders_count,
+        ar.review_text,
+        COALESCE(ar.is_loop_replied, FALSE) AS is_loop_replied_hist
+      FROM `{TABLE_AUTOMATION_REVIEWS}` AS ar
+      WHERE TRUE{date_filter}
+      QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY COALESCE(ar.review_id, ar.order_id)
+        ORDER BY COALESCE(ar.review_timestamp, ar.order_timestamp) DESC
+      ) = 1
+    ),
+    reviews AS (
+      SELECT
+        dr.platform,
+        dr.is_replied,
+        (lc_oid.completed_id IS NOT NULL
+         OR lc_rid.completed_id IS NOT NULL
+         OR dr.is_loop_replied_hist) AS is_loop_replied,
+        EXISTS (
+          SELECT 1
+          FROM `{TABLE_REVIEW_RESPONSE_CFG}` AS rrc
+          WHERE LOWER(rrc.chain_name) = LOWER(sm.chain)
+            AND rrc.paused = FALSE
+            AND (
+              ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(rrc.vb_platforms), [])) = 0
+              OR dr.platform IN UNNEST(JSON_VALUE_ARRAY(rrc.vb_platforms))
+            )
+            AND (
+              ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(rrc.ratings), [])) = 0
+              OR CAST(dr.star_rating AS STRING) IN UNNEST(JSON_VALUE_ARRAY(rrc.ratings))
+              OR dr.rating_value IN UNNEST(JSON_VALUE_ARRAY(rrc.ratings))
+            )
+            AND (
+              ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(rrc.customer_types), [])) = 0
+              OR (CASE WHEN dr.orders_count > 1 THEN 'existing' ELSE 'new' END)
+                 IN UNNEST(JSON_VALUE_ARRAY(rrc.customer_types))
+            )
+            AND (
+              ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(rrc.feedback_presence), [])) = 0
+              OR (CASE WHEN COALESCE(TRIM(dr.review_text), '') = '' THEN 'without_feedback' ELSE 'with_feedback' END)
+                 IN UNNEST(JSON_VALUE_ARRAY(rrc.feedback_presence))
+            )
+        ) AS in_scope
+      FROM deduped_reviews AS dr
+      INNER JOIN `{TABLE_SLUG_AM_MAPPING}` AS sm ON dr.slug = sm.slug
+      LEFT JOIN loop_completed AS lc_oid ON lc_oid.completed_id = dr.order_id
+      LEFT JOIN loop_completed AS lc_rid ON lc_rid.completed_id = dr.review_id
+      WHERE LOWER(sm.chain) = LOWER('{safe_chain}')
+    )
+    SELECT
+      CASE WHEN is_rollup = 1 THEN 'ALL' ELSE source_platform END AS platform,
+      total_reviews, in_scope, responded, loop_responded
+    FROM (
+      SELECT
+        platform AS source_platform,
+        GROUPING(platform) AS is_rollup,
+        COUNT(*) AS total_reviews,
+        COUNTIF(in_scope) AS in_scope,
+        COUNTIF(is_replied OR is_loop_replied) AS responded,
+        COUNTIF(is_loop_replied) AS loop_responded
+      FROM reviews
+      GROUP BY ROLLUP(platform)
+    )
+    ORDER BY is_rollup DESC, platform
+    """)

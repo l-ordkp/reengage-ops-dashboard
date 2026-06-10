@@ -142,6 +142,21 @@ export interface ChainHealthResponse {
   chains: ChainHealth[];
 }
 
+// ── Chain Value ─────────────────────────────────────────────────────────────
+export interface ChainValueRow {
+  platform: string;
+  total_reviews: number;
+  in_scope: number;
+  responded: number;
+  loop_responded: number;
+}
+
+export interface ChainValueResponse {
+  chain: string;
+  overall: ChainValueRow;
+  platforms: ChainValueRow[];
+}
+
 // ── Response Config ─────────────────────────────────────────────────────────
 export interface ResponseConfig {
   config_id: string;
