@@ -1,0 +1,48 @@
+name: Deploy reengage-ops-dashboard-v2
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-reengage-ops-dashboard-v2
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & deploy to Cloud Run (prod)
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       contains(github.event.pull_request.labels.*.name, 'reengage-ops-dashboard-v2'))
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: arboreal-vision-339901
+      REGION: us-central1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/983150008719/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider
+          service_account: github-actions@arboreal-vision-339901.iam.gserviceaccount.com
+          project_id: arboreal-vision-339901
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Submit Cloud Build
+        run: |
+          COMMIT_SHA=$(git rev-parse --short HEAD)
+          gcloud builds submit . \
+            --config cloudbuild.yaml \
+            --project="$PROJECT_ID" \
+            --substitutions=COMMIT_SHA=$COMMIT_SHA
