@@ -50,11 +50,17 @@ def fetch_my_pending_assignments(email: str) -> pd.DataFrame:
 
 
 def fetch_already_assigned_uids() -> set[str]:
-    """UIDs of reviews that have a pending/completed assignment in the last 14 days."""
+    """UIDs of reviews the 8 AM cron should skip re-ingesting. Includes
+    pending (currently being worked), completed (Loop submitted or matched
+    portal account replied via UI), and auto_resolved (platform reports
+    replied by someone outside Loop). Re-creating a pending row for any of
+    these would either double-assign work, lose the external-replied signal,
+    or both.
+    """
     df = bq_read(f"""
         SELECT DISTINCT review_uid
         FROM `{TABLE_ASSIGNMENTS}`
-        WHERE status IN ('pending', 'completed')
+        WHERE status IN ('pending', 'completed', 'auto_resolved')
           AND assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
     """)
     return set(df["review_uid"].tolist()) if not df.empty else set()
@@ -137,13 +143,46 @@ def mark_assignment_completed(assignment_id: str) -> None:
 
 
 def update_assignment_by_order_id(order_id: str) -> None:
-    """Mark pending assignment(s) for this order_id as completed (extension flow)."""
+    """Mark pending assignment(s) for this order_id as completed (extension flow).
+
+    Deliberately scoped to `status='pending'` only. Auto-resolved rows are
+    promoted by `promote_auto_resolved_to_completed` instead — if we widened
+    this WHERE to include `auto_resolved` and the same order_id had both a
+    pending and an auto_resolved row (rare race between cron ingest and
+    observation), a single UPDATE would flip BOTH to completed and double-
+    count in throughput / Chain Value.
+    """
     now = _now_str()
     safe_order_id = _escape_sql(order_id)
     bq_exec(f"""
         UPDATE `{TABLE_ASSIGNMENTS}`
         SET status = 'completed', completed_at = TIMESTAMP('{now}')
         WHERE order_id = '{safe_order_id}' AND status = 'pending'
+    """)
+
+
+def promote_auto_resolved_to_completed(order_id: str, operator_email: str) -> None:
+    """Promote any auto_resolved row for this order_id to completed and stamp
+    the actual submitter on `operator_email`. Covers the race where an
+    external responder beat us to the platform UI and our extension wrote
+    `auto_resolved`, but then a Loop operator submitted via our extension on
+    top — the latest submit wins.
+
+    Pre-PR-B the operator queue still shows auto_resolved rows so this race
+    can happen; post-PR-B the queue hides them and this UPDATE should
+    essentially never match a row. Cheap to keep as a safety net.
+    """
+    if not operator_email:
+        return
+    now = _now_str()
+    safe_order_id = _escape_sql(order_id)
+    safe_email = _escape_sql(operator_email)
+    bq_exec(f"""
+        UPDATE `{TABLE_ASSIGNMENTS}`
+        SET status = 'completed',
+            completed_at = TIMESTAMP('{now}'),
+            operator_email = '{safe_email}'
+        WHERE order_id = '{safe_order_id}' AND status = 'auto_resolved'
     """)
 
 
@@ -175,25 +214,33 @@ def insert_completed_assignment(
     """)
 
 
-def bulk_insert_observed_assignments(
-    items: list[dict], operator_email: str,
-) -> None:
-    """Insert one completed assignment per observed-responded item. Each item:
-    {review_uid, order_id, platform, chain_name}. operator_email is the
-    observer (the operator whose browser captured the platform's signal),
-    not a claim that they replied. The distinguishing remark goes into
-    ops_log, not into the assignment row itself."""
+def bulk_insert_observed_assignments(items: list[dict]) -> None:
+    """Insert one row per observed-responded item where no prior assignment
+    existed. Each item must carry:
+        review_uid, order_id, platform, chain_name (optional),
+        status         ('completed' for `missed_but_ours`,
+                        'auto_resolved' for `external`),
+        operator_email (matched Loop portal username for `missed_but_ours`;
+                        empty/None for `external`).
+
+    The `operator_email` column now reflects who actually replied (not who
+    observed the page). For `external` rows we deliberately store NULL so the
+    observer doesn't get false credit — the observer is still recorded in
+    ops_log via `performed_by`.
+    """
     if not items:
         return
     import uuid
     now = _now_str()
-    safe_operator_email = _escape_sql(operator_email)
     value_rows = []
     for item in items:
+        status = item.get("status") or "auto_resolved"
+        op_email = (item.get("operator_email") or "").strip()
+        op_sql = f"'{_escape_sql(op_email)}'" if op_email else "NULL"
         value_rows.append(
             f"('{uuid.uuid4()}', '{_escape_sql(item['review_uid'])}', '{_escape_sql(item['order_id'])}', "
-            f"'{safe_operator_email}', '{_escape_sql(item.get('chain_name', ''))}', '{_escape_sql(item['platform'])}', "
-            f"0, 'completed', TIMESTAMP('{now}'), TIMESTAMP('{now}'), NULL, NULL)"
+            f"{op_sql}, '{_escape_sql(item.get('chain_name', ''))}', '{_escape_sql(item['platform'])}', "
+            f"0, '{_escape_sql(status)}', TIMESTAMP('{now}'), TIMESTAMP('{now}'), NULL, NULL)"
         )
     batch_size = 500
     for start in range(0, len(value_rows), batch_size):
@@ -207,14 +254,19 @@ def bulk_insert_observed_assignments(
         """)
 
 
-def bulk_complete_pending_by_ids(
+def bulk_flip_pending_to(
     review_uids: list[str], order_ids: list[str],
+    new_status: str, new_operator_email: str | None,
 ) -> None:
-    """Flip any pending assignments matching the given review_uids or order_ids
-    to status='completed'. Used by the observed-responded flow when an
-    operator was already assigned a review but the platform now reports it
-    replied (merchant self-resolved while operator was prepping, or operator
-    submitted directly via the platform UI bypassing our extension)."""
+    """Flip pending assignments matching the given review_uids/order_ids to
+    `new_status`, and reset `operator_email`.
+
+    `new_status` should be 'completed' (responder matched the slug's Loop
+    portal account — `missed_but_ours`) or 'auto_resolved' (anyone else —
+    `external`). `new_operator_email` is the matched Loop username for
+    `missed_but_ours`; pass None for `external` so the original pending
+    assignee is cleared (they didn't actually do the work).
+    """
     now = _now_str()
     rev_quoted = ", ".join(f"'{_escape_sql(u)}'" for u in review_uids if u)
     ord_quoted = ", ".join(f"'{_escape_sql(o)}'" for o in order_ids if o)
@@ -225,9 +277,16 @@ def bulk_complete_pending_by_ids(
         where_clauses.append(f"order_id IN ({ord_quoted})")
     if not where_clauses:
         return
+    op_sql = (
+        f"'{_escape_sql(new_operator_email)}'"
+        if new_operator_email else "NULL"
+    )
+    safe_status = _escape_sql(new_status)
     bq_exec(f"""
         UPDATE `{TABLE_ASSIGNMENTS}`
-        SET status = 'completed', completed_at = TIMESTAMP('{now}')
+        SET status = '{safe_status}',
+            completed_at = TIMESTAMP('{now}'),
+            operator_email = {op_sql}
         WHERE status = 'pending' AND ({' OR '.join(where_clauses)})
     """)
 

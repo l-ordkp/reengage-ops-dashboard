@@ -75,10 +75,16 @@
                 if (r.merchantResponded) {
                   // deliveryUuid is nested inside orderReviewDetail
                   var detail = r.orderReviewDetail || {};
+                  // DD exposes the replier's portal email in merchantResponse.
+                  // Forwarded so the backend can match it against the slug's
+                  // Loop username in slug_am_mapping and classify the row as
+                  // `missed_but_ours` vs `external`.
+                  var mResp = r.merchantResponse || {};
                   responded.push({
                     deliveryUuid: detail.deliveryUuid || detail.delivery_uuid || null,
                     cxReviewId: r.cxReviewId || null,
-                    storeId: r.storeId || null
+                    storeId: r.storeId || null,
+                    merchantUserEmail: mResp.merchantUserEmail || null
                   });
                 }
               }
@@ -183,10 +189,12 @@
             var r = reviews[i];
             if (r.merchantResponded) {
               var detail = r.orderReviewDetail || {};
+              var mResp = r.merchantResponse || {};
               responded.push({
                 deliveryUuid: detail.deliveryUuid || detail.delivery_uuid || null,
                 cxReviewId: r.cxReviewId || null,
-                storeId: r.storeId || null
+                storeId: r.storeId || null,
+                merchantUserEmail: mResp.merchantUserEmail || null
               });
             }
           }

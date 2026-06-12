@@ -15,3 +15,10 @@ class AssignmentStatus(str, Enum):
     COMPLETED = "completed"
     EXPIRED = "expired"
     REASSIGNED = "reassigned"
+    # The platform reported the review as already replied AND the responder did
+    # not match the slug's Loop username — i.e. the merchant or a third-party
+    # account replied. Inserted/flipped by the observed-responded flow. Treated
+    # as "responded, not by Loop" — operator queue hides it (so it doesn't get
+    # re-handled) but it does NOT count toward Loop's per-operator throughput
+    # or Chain Value's `loop_responded` waterfall leg.
+    AUTO_RESOLVED = "auto_resolved"

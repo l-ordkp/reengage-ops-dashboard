@@ -100,6 +100,10 @@
             review_uid: reviewUid,
             order_id: orderId,
             store_id: r.storeId ? String(r.storeId) : "",
+            // DD's merchantResponse.merchantUserEmail — used by the backend to
+            // classify the row as `missed_but_ours` (matches the slug's Loop
+            // username) vs `external`.
+            platform_responder_id: r.merchantUserEmail || "",
           });
         }
       } else if (respPlatform === "ubereats") {
@@ -110,6 +114,10 @@
             review_uid: uuid,
             order_id: uuid,
             store_id: r.storeId ? String(r.storeId) : "",
+            // UE's reviews payload doesn't expose the responder's email, only
+            // a userUUID we can't match against slug_am_mapping. Sent empty;
+            // backend falls through to `external` classification.
+            platform_responder_id: "",
           });
         }
       }

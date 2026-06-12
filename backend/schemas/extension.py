@@ -28,6 +28,12 @@ class ObservedRespondedItem(BaseModel):
     review_uid: str
     order_id: str
     store_id: str = ""
+    # Identifier of the merchant-portal user that posted the reply, as the
+    # platform reports it. DD: merchantResponse.merchantUserEmail. UE: not
+    # exposed in the reviews payload yet, so this is empty on UE today.
+    # Used to classify the row as `missed_but_ours` (matches the slug's Loop
+    # username in slug_am_mapping) vs `external` (merchant or third-party).
+    platform_responder_id: str = ""
 
 
 class ObservedRespondedBody(BaseModel):

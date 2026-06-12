@@ -10,8 +10,13 @@ from backend.config import (
     PROJECT,
     TABLE_AUTOMATION_REVIEWS,
     TABLE_REVIEW_RESPONSES,
+    TABLE_SLUG_AM_MAPPING,
     TABLE_USERS,
 )
+
+
+def _escape(value: str) -> str:
+    return (value or "").replace("'", "''")
 
 
 def is_operator_approved(email: str) -> bool:
@@ -49,6 +54,47 @@ def lookup_review_uid_by_order(order_id: str) -> str:
         LIMIT 1
     """)
     return rows[0]["review_uid"] if rows else order_id
+
+
+def fetch_loop_usernames_for_stores(
+    store_ids: list[str], platform: str,
+) -> dict[str, set[str]]:
+    """Return {store_id → set of lowercased Loop portal usernames} for the
+    given stores on this platform. Used by the observed-responded flow to
+    decide whether a platform-reported reply was sent from one of the slug's
+    Loop portal accounts (`missed_but_ours`) or from a different account
+    (`external`).
+
+    Returns a SET per store, not a single string, because the audit shows
+    some store_ids legitimately carry multiple usernames in slug_am_mapping
+    (different vb_name rows for the same store sometimes use distinct portal
+    logins). Match if the responder email is in the set.
+
+    Lowercased so the caller can do a case-insensitive comparison against the
+    platform's `merchantUserEmail`. Stores without any mapping are absent from
+    the returned dict — caller should treat them as no-match.
+    """
+    cleaned = [s for s in {s.strip() for s in store_ids} if s]
+    if not cleaned:
+        return {}
+    in_list = ", ".join(f"'{_escape(s)}'" for s in cleaned)
+    safe_platform = _escape(platform)
+    rows = bq_read_dicts(f"""
+        SELECT store_id, LOWER(TRIM(username)) AS username
+        FROM `{PROJECT}.{TABLE_SLUG_AM_MAPPING}`
+        WHERE store_id IN ({in_list})
+          AND LOWER(vb_platform) = LOWER('{safe_platform}')
+          AND username IS NOT NULL
+          AND TRIM(username) != ''
+    """)
+    out: dict[str, set[str]] = {}
+    for row in rows:
+        sid = row.get("store_id")
+        username = row.get("username")
+        if not sid or not username:
+            continue
+        out.setdefault(sid, set()).add(username)
+    return out
 
 
 def resolve_canonical_order_id(maybe_id: str) -> str | None:

@@ -10,16 +10,18 @@ import uuid
 from fastapi import HTTPException
 
 from backend.repositories.assignment_repository import (
-    bulk_complete_pending_by_ids,
+    bulk_flip_pending_to,
     bulk_insert_observed_assignments,
     fetch_assignment_by_order_id,
     fetch_assignments_by_ids,
     insert_completed_assignment,
     mark_is_loop_replied,
+    promote_auto_resolved_to_completed,
     update_assignment_by_order_id,
     update_assignment_platform_ids,
 )
 from backend.repositories.extension_repository import (
+    fetch_loop_usernames_for_stores,
     is_operator_approved,
     lookup_response_by_order,
     lookup_review_uid_by_order,
@@ -118,6 +120,12 @@ def mark_responded(
     existing = fetch_assignment_by_order_id(order_id)
     if not existing.empty:
         update_assignment_by_order_id(order_id)
+        # Race fallback: if an observation classified this order as
+        # auto_resolved before the operator submitted, promote that row to
+        # completed and overwrite operator_email to the real submitter. The
+        # two helpers each target ONE status, so they can't double-flip when
+        # a pending and an auto_resolved row both exist for one order_id.
+        promote_auto_resolved_to_completed(order_id, operator_email)
     else:
         insert_completed_assignment(
             review_uid=review_uid, order_id=order_id, operator_email=operator_email,
@@ -148,13 +156,26 @@ def mark_responded(
 
 
 def observed_responded(items: list[dict], operator_email: str) -> dict:
-    """Back-mark reviews the platform has confirmed as replied (merchant
-    self-resolved, or operator submitted via platform UI without our extension).
+    """Back-mark reviews the platform has confirmed as replied.
 
-    Three-state logic per item:
-      - already 'completed' → skip (don't overwrite a real submit's metadata)
-      - 'pending'           → flip to completed (audit: auto_during_pending)
-      - no row              → INSERT as completed (audit: auto_self_resolved)
+    For each item we classify by responder identity (DD's merchantUserEmail
+    against the slug's Loop portal username in slug_am_mapping):
+
+      - match  → `missed_but_ours`: a Loop operator replied via the platform
+                 UI bypassing our extension. Row written as status='completed',
+                 attributed to the matched Loop username. Counts toward Loop
+                 throughput like any real submit.
+      - no match (or no responder id, e.g. UE) → `external`: merchant or
+                 third-party replied. Row written as status='auto_resolved',
+                 operator_email=NULL. Hidden from queues but does NOT count
+                 toward Loop throughput.
+
+    Combined with whether a prior assignment row existed (self_resolved vs
+    during_pending) this yields 4 ops_log remark values; see the spec in
+    PR-A's description.
+
+    Already-completed rows are still skipped — observations never overwrite
+    a real submit's metadata.
     """
     operator_email = validate_operator(operator_email)
 
@@ -172,10 +193,14 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
             "review_uid": review_uid,
             "order_id": order_id,
             "store_id": (item.get("store_id") or "").strip(),
+            "platform_responder_id": (item.get("platform_responder_id") or "").strip(),
         })
 
     if not valid:
-        return {"processed": 0, "skipped": 0, "flipped": 0, "inserted": 0}
+        return {
+            "processed": 0, "skipped": 0, "flipped": 0, "inserted": 0,
+            "missed_but_ours": 0, "external": 0,
+        }
 
     existing = fetch_assignments_by_ids(
         review_uids=[v["review_uid"] for v in valid],
@@ -184,8 +209,12 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
     # Priority resolves "multiple rows for the same review_uid/order_id" cases.
     # A live 'pending' assignment must beat a stale 'reassigned'/'expired' row,
     # otherwise iteration order (undefined in BQ) decides whether we flip or
-    # insert. 'completed' is the firm cap — never overwritten by an observation.
-    STATUS_PRIORITY = {"completed": 3, "pending": 2, "expired": 1, "reassigned": 0}
+    # insert. 'completed' and 'auto_resolved' are firm caps — never overwritten
+    # by a further observation.
+    STATUS_PRIORITY = {
+        "completed": 4, "auto_resolved": 3,
+        "pending": 2, "expired": 1, "reassigned": 0,
+    }
 
     def _merge_status(existing_status: str | None, new_status: str) -> str:
         if existing_status is None:
@@ -205,67 +234,164 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
                     status_by_order_id.get(row["order_id"]), row["status"],
                 )
 
-    to_flip: list[dict] = []
-    to_insert: list[dict] = []
+    # Batched per-platform lookup of each store's Loop portal usernames —
+    # used to decide `missed_but_ours` (responder matches) vs `external`.
+    # Skipped per platform when no item carries a `platform_responder_id`
+    # (today: every UE batch, since UE's reviews payload doesn't expose the
+    # email). Saves one BQ round-trip per such batch.
+    loop_usernames_by_store: dict[tuple[str, str], set[str]] = {}
+    for plat in ("Doordash", "UberEats"):
+        store_ids = [
+            v["store_id"] for v in valid
+            if v["platform"] == plat and v["store_id"] and v["platform_responder_id"]
+        ]
+        if not store_ids:
+            continue
+        mapping = fetch_loop_usernames_for_stores(store_ids, plat)
+        for sid, usernames in mapping.items():
+            loop_usernames_by_store[(plat, sid)] = usernames
+
+    def _matched_loop_username(item: dict) -> str | None:
+        """Return the matched Loop portal username for this item, or None."""
+        responder = item["platform_responder_id"].lower()
+        if not responder:
+            return None
+        usernames = loop_usernames_by_store.get((item["platform"], item["store_id"]))
+        if not usernames:
+            return None
+        return responder if responder in usernames else None
+
+    to_flip_loop: list[dict] = []   # missed_but_ours | during_pending
+    to_flip_ext: list[dict] = []    # external        | during_pending
+    to_insert_loop: list[dict] = [] # missed_but_ours | self_resolved
+    to_insert_ext: list[dict] = []  # external        | self_resolved
     skipped = 0
     for item in valid:
-        # Look at both lookup keys; pick whichever is higher priority.
         candidate_statuses = [
             status_by_review_uid.get(item["review_uid"]),
             status_by_order_id.get(item["order_id"]),
         ]
         candidate_statuses = [s for s in candidate_statuses if s]
-        status = (
+        prior_status = (
             max(candidate_statuses, key=lambda s: STATUS_PRIORITY.get(s, -1))
             if candidate_statuses else None
         )
-        if status == "completed":
+        # Already-terminal rows (completed or auto_resolved) are never
+        # overwritten — those classifications are firm.
+        if prior_status in ("completed", "auto_resolved"):
             skipped += 1
-        elif status == "pending":
-            to_flip.append(item)
+            continue
+        matched = _matched_loop_username(item)
+        item_with_match = {**item, "_matched_loop_username": matched}
+        if prior_status == "pending":
+            (to_flip_loop if matched else to_flip_ext).append(item_with_match)
         else:
-            to_insert.append(item)
+            (to_insert_loop if matched else to_insert_ext).append(item_with_match)
 
-    if to_flip:
-        bulk_complete_pending_by_ids(
-            review_uids=[v["review_uid"] for v in to_flip],
-            order_ids=[v["order_id"] for v in to_flip],
+    # Apply DB writes per bucket. bulk_flip_pending_to also resets
+    # operator_email — to the matched Loop username for `missed_but_ours`,
+    # to NULL for `external` (clearing the original pending assignee since
+    # they didn't actually do the work).
+    if to_flip_loop:
+        # Group by matched username so each batch UPDATE writes one consistent
+        # operator_email. In practice all matches in a single batch will share
+        # a username (per slug), but grouping defends against the rare
+        # multi-username store case.
+        by_match: dict[str, list[dict]] = {}
+        for item in to_flip_loop:
+            by_match.setdefault(item["_matched_loop_username"], []).append(item)
+        for username, group in by_match.items():
+            bulk_flip_pending_to(
+                review_uids=[v["review_uid"] for v in group],
+                order_ids=[v["order_id"] for v in group],
+                new_status="completed",
+                new_operator_email=username,
+            )
+    if to_flip_ext:
+        bulk_flip_pending_to(
+            review_uids=[v["review_uid"] for v in to_flip_ext],
+            order_ids=[v["order_id"] for v in to_flip_ext],
+            new_status="auto_resolved",
+            new_operator_email=None,
         )
-    if to_insert:
-        bulk_insert_observed_assignments(to_insert, operator_email)
+    if to_insert_loop or to_insert_ext:
+        insert_payload = []
+        for item in to_insert_loop:
+            insert_payload.append({
+                "review_uid": item["review_uid"],
+                "order_id": item["order_id"],
+                "platform": item["platform"],
+                "chain_name": "",
+                "status": "completed",
+                "operator_email": item["_matched_loop_username"],
+            })
+        for item in to_insert_ext:
+            insert_payload.append({
+                "review_uid": item["review_uid"],
+                "order_id": item["order_id"],
+                "platform": item["platform"],
+                "chain_name": "",
+                "status": "auto_resolved",
+                "operator_email": None,
+            })
+        bulk_insert_observed_assignments(insert_payload)
 
     log_entries: list[dict] = []
-    for item in to_flip:
+    for item in to_flip_loop:
         log_entries.append({
             "review_uid": item["review_uid"],
             "platform": item["platform"],
             "chain_name": "",
             "action": "observed_responded",
-            "operator_email": operator_email,
+            "operator_email": item["_matched_loop_username"],
             "performed_by": operator_email,
-            "remarks": "auto_during_pending",
+            "remarks": "missed_but_ours|during_pending",
         })
-    for item in to_insert:
+    for item in to_flip_ext:
         log_entries.append({
             "review_uid": item["review_uid"],
             "platform": item["platform"],
             "chain_name": "",
             "action": "observed_responded",
-            "operator_email": operator_email,
+            "operator_email": "",
             "performed_by": operator_email,
-            "remarks": "auto_self_resolved",
+            "remarks": "external|during_pending",
+        })
+    for item in to_insert_loop:
+        log_entries.append({
+            "review_uid": item["review_uid"],
+            "platform": item["platform"],
+            "chain_name": "",
+            "action": "observed_responded",
+            "operator_email": item["_matched_loop_username"],
+            "performed_by": operator_email,
+            "remarks": "missed_but_ours|self_resolved",
+        })
+    for item in to_insert_ext:
+        log_entries.append({
+            "review_uid": item["review_uid"],
+            "platform": item["platform"],
+            "chain_name": "",
+            "action": "observed_responded",
+            "operator_email": "",
+            "performed_by": operator_email,
+            "remarks": "external|self_resolved",
         })
     if log_entries:
         log_actions_bulk(log_entries)
 
     # Bust the dashboard cache so the back-marked reviews flip to RESPONDED
     # on the next read, not after the 5-minute TTL expires.
-    if to_flip or to_insert:
+    flipped_count = len(to_flip_loop) + len(to_flip_ext)
+    inserted_count = len(to_insert_loop) + len(to_insert_ext)
+    if flipped_count or inserted_count:
         fetch_reviews_14d.clear()
 
     return {
         "processed": len(valid),
         "skipped": skipped,
-        "flipped": len(to_flip),
-        "inserted": len(to_insert),
+        "flipped": flipped_count,
+        "inserted": inserted_count,
+        "missed_but_ours": len(to_flip_loop) + len(to_insert_loop),
+        "external": len(to_flip_ext) + len(to_insert_ext),
     }
