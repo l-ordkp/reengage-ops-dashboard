@@ -91,12 +91,16 @@ WHERE a.platform = 'Doordash'
 
 
 -- ----------------------------------------------------------------------------
--- 2. UE assignments: status='auto_resolved', operator_email=NULL.
+-- 2. UE assignments: status='auto_resolved', operator_email='' (empty).
 --    Historic UE auto rows had no responder-id signal — treat as external.
+--    operator_email column is REQUIRED in the schema, so we use empty string
+--    (not NULL) to mean "no Loop operator did this". Downstream queries
+--    either filter on status != 'auto_resolved' or explicitly handle '' as
+--    sentinel; see PR-B operator_repository.py for the throughput filter.
 -- ----------------------------------------------------------------------------
 UPDATE `arboreal-vision-339901.ops_metrics_data.reengage_dashboard_v2_assignments`
 SET status = 'auto_resolved',
-    operator_email = NULL
+    operator_email = ''
 WHERE platform = 'UberEats'
   AND status = 'completed'
   AND review_uid IN (
