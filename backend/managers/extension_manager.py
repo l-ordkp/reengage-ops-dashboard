@@ -312,7 +312,7 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
             review_uids=[v["review_uid"] for v in to_flip_ext],
             order_ids=[v["order_id"] for v in to_flip_ext],
             new_status="auto_resolved",
-            new_operator_email=None,
+            new_operator_email="",
         )
     if to_insert_loop or to_insert_ext:
         insert_payload = []
@@ -332,7 +332,7 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
                 "platform": item["platform"],
                 "chain_name": "",
                 "status": "auto_resolved",
-                "operator_email": None,
+                "operator_email": "",
             })
         bulk_insert_observed_assignments(insert_payload)
 

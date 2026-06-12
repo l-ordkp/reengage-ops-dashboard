@@ -249,8 +249,9 @@ def bulk_insert_observed_assignments(items: list[dict]) -> None:
                         empty/None for `external`).
 
     The `operator_email` column now reflects who actually replied (not who
-    observed the page). For `external` rows we deliberately store NULL so the
-    observer doesn't get false credit — the observer is still recorded in
+    observed the page). For `external` rows we deliberately store '' (empty
+    string) — the column is declared NOT NULL in BQ, and '' is the sentinel
+    for "no Loop operator did this work". The observer is still recorded in
     ops_log via `performed_by`.
     """
     if not items:
@@ -261,10 +262,9 @@ def bulk_insert_observed_assignments(items: list[dict]) -> None:
     for item in items:
         status = item.get("status") or "auto_resolved"
         op_email = (item.get("operator_email") or "").strip()
-        op_sql = f"'{_escape_sql(op_email)}'" if op_email else "NULL"
         value_rows.append(
             f"('{uuid.uuid4()}', '{_escape_sql(item['review_uid'])}', '{_escape_sql(item['order_id'])}', "
-            f"{op_sql}, '{_escape_sql(item.get('chain_name', ''))}', '{_escape_sql(item['platform'])}', "
+            f"'{_escape_sql(op_email)}', '{_escape_sql(item.get('chain_name', ''))}', '{_escape_sql(item['platform'])}', "
             f"0, '{_escape_sql(status)}', TIMESTAMP('{now}'), TIMESTAMP('{now}'), NULL, NULL)"
         )
     batch_size = 500
@@ -281,7 +281,7 @@ def bulk_insert_observed_assignments(items: list[dict]) -> None:
 
 def bulk_flip_pending_to(
     review_uids: list[str], order_ids: list[str],
-    new_status: str, new_operator_email: str | None,
+    new_status: str, new_operator_email: str,
 ) -> None:
     """Flip pending assignments matching the given review_uids/order_ids to
     `new_status`, and reset `operator_email`.
@@ -289,8 +289,10 @@ def bulk_flip_pending_to(
     `new_status` should be 'completed' (responder matched the slug's Loop
     portal account — `missed_but_ours`) or 'auto_resolved' (anyone else —
     `external`). `new_operator_email` is the matched Loop username for
-    `missed_but_ours`; pass None for `external` so the original pending
-    assignee is cleared (they didn't actually do the work).
+    `missed_but_ours`; pass '' (empty string) for `external` so the original
+    pending assignee is cleared (they didn't actually do the work). The
+    operator_email column is NOT NULL in BQ — '' is the sentinel for "no
+    Loop operator did this work".
     """
     now = _now_str()
     rev_quoted = ", ".join(f"'{_escape_sql(u)}'" for u in review_uids if u)
@@ -302,16 +304,13 @@ def bulk_flip_pending_to(
         where_clauses.append(f"order_id IN ({ord_quoted})")
     if not where_clauses:
         return
-    op_sql = (
-        f"'{_escape_sql(new_operator_email)}'"
-        if new_operator_email else "NULL"
-    )
+    safe_email = _escape_sql(new_operator_email or "")
     safe_status = _escape_sql(new_status)
     bq_exec(f"""
         UPDATE `{TABLE_ASSIGNMENTS}`
         SET status = '{safe_status}',
             completed_at = TIMESTAMP('{now}'),
-            operator_email = {op_sql}
+            operator_email = '{safe_email}'
         WHERE status = 'pending' AND ({' OR '.join(where_clauses)})
     """)
 
