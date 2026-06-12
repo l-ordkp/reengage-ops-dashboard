@@ -13,7 +13,14 @@ from backend.utils.cache import cached
 # CST would smear each shift across two CST date buckets.
 @cached(ttl=120)
 def fetch_operator_performance_14d() -> pd.DataFrame:
-    """Per-operator totals over the last 14 IST days (completion rate = completed / total)."""
+    """Per-operator totals over the last 14 IST days (completion rate = completed / total).
+
+    Filters out `status='auto_resolved'` rows — those are external replies
+    (merchant or third-party) that PR-A stamps with `operator_email=NULL`.
+    Counting them would surface a NULL-operator group in the leaderboard
+    with bogus `total_assigned` and zeroes for every operator-completed
+    breakdown.
+    """
     return bq_read(f"""
         SELECT
             operator_email,
@@ -27,13 +34,15 @@ def fetch_operator_performance_14d() -> pd.DataFrame:
             SAFE_DIVIDE(COUNTIF(status = 'completed'), COUNT(*)) * 100 AS completion_rate
         FROM `{TABLE_ASSIGNMENTS}`
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 14 DAY), 'Asia/Kolkata')
+          AND status != 'auto_resolved'
         GROUP BY operator_email
     """)
 
 
 @cached(ttl=300)
 def fetch_operator_daily_breakdown_14d() -> pd.DataFrame:
-    """Per-operator, per-IST-day metrics."""
+    """Per-operator, per-IST-day metrics. Excludes auto_resolved (see
+    fetch_operator_performance_14d for rationale)."""
     return bq_read(f"""
         SELECT
             operator_email,
@@ -46,6 +55,7 @@ def fetch_operator_daily_breakdown_14d() -> pd.DataFrame:
             SAFE_DIVIDE(COUNTIF(status = 'completed'), COUNT(*)) * 100 AS completion_pct
         FROM `{TABLE_ASSIGNMENTS}`
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 14 DAY), 'Asia/Kolkata')
+          AND status != 'auto_resolved'
         GROUP BY operator_email, assign_date
         ORDER BY assign_date DESC, operator_email
     """)
@@ -122,7 +132,8 @@ def fetch_daily_ingested_14d() -> pd.DataFrame:
 
 @cached(ttl=300)
 def fetch_operator_chain_breakdown_14d() -> pd.DataFrame:
-    """Per-operator, per-chain-platform metrics (last 14 IST days)."""
+    """Per-operator, per-chain-platform metrics (last 14 IST days). Excludes
+    auto_resolved (see fetch_operator_performance_14d for rationale)."""
     return bq_read(f"""
         SELECT
             operator_email, chain_name, platform,
@@ -133,6 +144,7 @@ def fetch_operator_chain_breakdown_14d() -> pd.DataFrame:
             COUNTIF(status = 'reassigned') AS reassigned
         FROM `{TABLE_ASSIGNMENTS}`
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 14 DAY), 'Asia/Kolkata')
+          AND status != 'auto_resolved'
         GROUP BY operator_email, chain_name, platform
         ORDER BY operator_email, assigned DESC
     """)

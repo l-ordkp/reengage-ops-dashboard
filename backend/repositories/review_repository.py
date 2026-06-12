@@ -125,13 +125,29 @@ def fetch_reviews_14d() -> pd.DataFrame:
             ON reviews_with_deadline.order_id = review_response.order_id
     ),
     reviews_with_assignment AS (
+        -- LEFT JOIN against a per-review_uid deduped view of assignments.
+        -- Widening the status filter (PR-B) means a review_uid that legitimately
+        -- has both a `completed` and an `auto_resolved` row would otherwise
+        -- duplicate into the output and break downstream per-row aggregations
+        -- (e.g. chain_health_manager's drop_duplicates is non-deterministic on
+        -- which row wins). Priority: completed beats auto_resolved so
+        -- is_loop_replied stays TRUE when Loop actually did the work.
         SELECT
             reviews_with_response.*,
             assignment.status AS assignment_status
         FROM reviews_with_response
-        LEFT JOIN `{TABLE_ASSIGNMENTS}` AS assignment
-            ON reviews_with_response.review_uid = assignment.review_uid
-           AND assignment.status = 'completed'
+        LEFT JOIN (
+            SELECT review_uid, status
+            FROM `{TABLE_ASSIGNMENTS}`
+            WHERE status IN ('completed', 'auto_resolved')
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY review_uid
+                ORDER BY CASE status
+                    WHEN 'completed' THEN 0
+                    ELSE 1
+                END
+            ) = 1
+        ) AS assignment USING (review_uid)
     ),
     reviews_with_status AS (
         SELECT
@@ -139,7 +155,11 @@ def fetch_reviews_14d() -> pd.DataFrame:
             CASE
                 WHEN is_replied = TRUE THEN 'RESPONDED'
                 WHEN response_sent IS NOT NULL THEN 'RESPONDED'
-                WHEN assignment_status = 'completed' THEN 'RESPONDED'
+                -- auto_resolved = platform reports the review replied by
+                -- someone outside Loop. Still RESPONDED for queue purposes
+                -- (don't re-assign), but is_loop_replied below stays FALSE
+                -- so it doesn't inflate Loop-completed metrics.
+                WHEN assignment_status IN ('completed', 'auto_resolved') THEN 'RESPONDED'
                 WHEN hours_left <= 0 THEN 'EXPIRED'
                 ELSE 'PENDING'
             END AS status,
@@ -185,10 +205,11 @@ def fetch_reviews_14d() -> pd.DataFrame:
         portal_link, response_text, ai_response_type AS response_type, coupon_value,
         CAST(config_id AS STRING) AS config_id, status, priority,
         is_replied,
-        -- Derive is_loop_replied from our own assignments table instead of
-        -- reading the now-stale automation_reviews flag (we no longer write
-        -- to that column).  assignment_status='completed' is set by both the
-        -- extension flow and the routers/assignments mark-completed endpoint.
+        -- is_loop_replied is TRUE only when Loop actually did the work —
+        -- real mark_responded via extension, OR observed_responded with a
+        -- responder email that matched the slug's portal username
+        -- (missed_but_ours). Both of these write status='completed'.
+        -- auto_resolved (external responder) deliberately does NOT count.
         (assignment_status = 'completed') AS is_loop_replied,
         portal_username, portal_password
     FROM reviews_with_status
