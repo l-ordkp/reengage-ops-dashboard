@@ -162,23 +162,28 @@ def update_assignment_by_order_id(order_id: str) -> None:
 
 
 def promote_auto_resolved_to_completed(order_id: str, operator_email: str) -> None:
-    """Promote the auto_resolved row for this order_id to completed and stamp
-    the actual submitter on `operator_email`. Covers the race where an
-    external responder beat us to the platform UI and our extension wrote
-    `auto_resolved`, but then a Loop operator submitted via our extension on
-    top — the latest submit wins.
+    """Promote at most ONE auto_resolved row for this order_id to completed
+    and stamp the actual submitter on `operator_email`. Covers the race
+    where an external responder beat us to the platform UI and our extension
+    wrote `auto_resolved`, but then a Loop operator submitted via our
+    extension on top — the latest submit wins.
+
+    Two guards against creating duplicate `completed` rows for one order:
+      1. The UPDATE pins to a single assignment_id via a scalar subquery
+         (ORDER BY assigned_at DESC LIMIT 1). If the assignments table holds
+         multiple auto_resolved rows for the same order_id (TOCTOU race
+         between concurrent observed_responded calls, or a re-ingestion that
+         flipped a stale pending row into a second auto_resolved while a
+         first one already existed), only the most recent is promoted —
+         older auto_resolved orphans stay as `auto_resolved`, benign for
+         every read (queue/Chain Value already filter or dedupe by order_id).
+      2. NOT EXISTS short-circuits the whole UPDATE if any `completed` row
+         already exists for the order_id, so we never sit a fresh promote
+         next to a pre-existing completion.
 
     Pre-PR-B the operator queue still shows auto_resolved rows so this race
     can happen; post-PR-B the queue hides them and this UPDATE should
     essentially never match a row. Cheap to keep as a safety net.
-
-    Guarded with NOT EXISTS against an already-`completed` row for the same
-    order_id: if a completed row exists (e.g., re-ingestion outside the 14d
-    dedup window created a new pending that mark_responded already flipped,
-    or a separate completed row predates the auto_resolved one for any
-    reason), promoting here would produce two `completed` rows for one order
-    and double-count in throughput / Chain Value. The guard makes this
-    helper a no-op in that case.
     """
     if not operator_email:
         return
@@ -190,8 +195,14 @@ def promote_auto_resolved_to_completed(order_id: str, operator_email: str) -> No
         SET status = 'completed',
             completed_at = TIMESTAMP('{now}'),
             operator_email = '{safe_email}'
-        WHERE target.order_id = '{safe_order_id}'
-          AND target.status = 'auto_resolved'
+        WHERE target.assignment_id = (
+            SELECT assignment_id
+            FROM `{TABLE_ASSIGNMENTS}`
+            WHERE order_id = '{safe_order_id}'
+              AND status = 'auto_resolved'
+            ORDER BY assigned_at DESC
+            LIMIT 1
+          )
           AND NOT EXISTS (
             SELECT 1 FROM `{TABLE_ASSIGNMENTS}` AS existing_completed
             WHERE existing_completed.order_id = '{safe_order_id}'
