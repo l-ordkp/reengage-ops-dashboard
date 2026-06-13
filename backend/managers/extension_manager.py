@@ -29,7 +29,17 @@ from backend.repositories.extension_repository import (
     resolve_canonical_order_id,
 )
 from backend.repositories.ops_log_repository import log_action, log_actions_bulk
-from backend.repositories.review_repository import fetch_reviews_14d
+from backend.repositories.operator_repository import (
+    fetch_daily_loop_completed_14d,
+    fetch_operator_chain_breakdown_14d,
+    fetch_operator_daily_breakdown_14d,
+    fetch_operator_performance_14d,
+)
+from backend.repositories.review_repository import (
+    fetch_chain_totals_14d,
+    fetch_chain_value,
+    fetch_reviews_14d,
+)
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -403,12 +413,21 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
     if log_entries:
         log_actions_bulk(log_entries)
 
-    # Bust the dashboard cache so the back-marked reviews flip to RESPONDED
-    # on the next read, not after the 5-minute TTL expires.
+    # Bust every cached dashboard read that touches the assignments table,
+    # so an observation lands across the whole UI immediately rather than
+    # rolling in over the 2-5 minute TTL window. Without this, Chain Value's
+    # loop_responded count and the operator-leaderboard sit stale right
+    # after a busy portal browse.
     flipped_count = len(to_flip_loop) + len(to_flip_ext)
     inserted_count = len(to_insert_loop) + len(to_insert_ext)
     if flipped_count or inserted_count:
         fetch_reviews_14d.clear()
+        fetch_chain_value.clear()
+        fetch_chain_totals_14d.clear()
+        fetch_daily_loop_completed_14d.clear()
+        fetch_operator_performance_14d.clear()
+        fetch_operator_daily_breakdown_14d.clear()
+        fetch_operator_chain_breakdown_14d.clear()
 
     out_of_window_count = sum(
         1 for v in valid if v.get("observed_out_of_window")

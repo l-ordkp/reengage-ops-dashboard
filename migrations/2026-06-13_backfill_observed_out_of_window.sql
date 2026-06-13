@@ -43,6 +43,11 @@ ORDER BY a.platform;
 UPDATE `arboreal-vision-339901.ops_metrics_data.reengage_dashboard_v2_assignments` a
 SET observed_out_of_window = CASE
   WHEN obs.review_ts IS NULL THEN TRUE
+  -- Future-dated review_timestamps (clock skew / malformed source) are
+  -- treated as out_of_window so they don't leak into operator/throughput
+  -- metrics. Matches the upper bound on the runtime write path
+  -- (extension_repository.fetch_review_age_status).
+  WHEN obs.review_ts > obs.observed_at THEN TRUE
   WHEN obs.platform = 'Doordash' THEN
     TIMESTAMP_ADD(obs.review_ts, INTERVAL 7 DAY) < obs.observed_at
   WHEN obs.platform = 'UberEats' THEN
