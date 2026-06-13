@@ -11,15 +11,28 @@ from backend.utils.cache import cached
 # Operator-throughput reporting groups by IST date: operators are in India,
 # the workday and the 8 AM IST assignment cron are IST events. Grouping by
 # CST would smear each shift across two CST date buckets.
+_OBSERVED_OOW_FILTER = (
+    # Drop rows where the extension's /observed-responded flow flagged the
+    # underlying review as past the platform deadline. These are real Loop
+    # replies (Chain Value counts them) but shouldn't inflate operators'
+    # "today's work" view since the actual reply was sent days/weeks ago.
+    "NOT IFNULL(observed_out_of_window, FALSE)"
+)
+
+
 @cached(ttl=120)
 def fetch_operator_performance_14d() -> pd.DataFrame:
     """Per-operator totals over the last 14 IST days (completion rate = completed / total).
 
     Filters out `status='auto_resolved'` rows — those are external replies
-    (merchant or third-party) that PR-A stamps with `operator_email=NULL`.
-    Counting them would surface a NULL-operator group in the leaderboard
-    with bogus `total_assigned` and zeroes for every operator-completed
-    breakdown.
+    (merchant or third-party) that PR-A stamps with `operator_email=''`.
+    Counting them would surface a phantom group in the leaderboard with
+    bogus `total_assigned`.
+
+    Also filters out `observed_out_of_window=TRUE` rows — those represent
+    late observations of reviews already past the platform deadline (the
+    Loop reply happened days/weeks ago via the portal UI). Counting them
+    would credit operators for "today's work" that was actually historical.
     """
     return bq_read(f"""
         SELECT
@@ -35,14 +48,15 @@ def fetch_operator_performance_14d() -> pd.DataFrame:
         FROM `{TABLE_ASSIGNMENTS}`
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 14 DAY), 'Asia/Kolkata')
           AND status != 'auto_resolved'
+          AND {_OBSERVED_OOW_FILTER}
         GROUP BY operator_email
     """)
 
 
 @cached(ttl=300)
 def fetch_operator_daily_breakdown_14d() -> pd.DataFrame:
-    """Per-operator, per-IST-day metrics. Excludes auto_resolved (see
-    fetch_operator_performance_14d for rationale)."""
+    """Per-operator, per-IST-day metrics. Excludes auto_resolved and
+    out-of-window observations (see fetch_operator_performance_14d)."""
     return bq_read(f"""
         SELECT
             operator_email,
@@ -56,6 +70,7 @@ def fetch_operator_daily_breakdown_14d() -> pd.DataFrame:
         FROM `{TABLE_ASSIGNMENTS}`
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 14 DAY), 'Asia/Kolkata')
           AND status != 'auto_resolved'
+          AND {_OBSERVED_OOW_FILTER}
         GROUP BY operator_email, assign_date
         ORDER BY assign_date DESC, operator_email
     """)
@@ -67,6 +82,11 @@ def fetch_daily_loop_completed_14d() -> pd.DataFrame:
     Loop ops marked completed that day. IST so each bar aligns with one
     operator workday (CST would split a shift across two bars). Densified —
     days with zero completions still appear as 0 so the chart doesn't skip.
+
+    Filters out `observed_out_of_window=TRUE` rows so late observations of
+    long-past Loop replies don't show up as spikes on the day they were
+    observed (they'd otherwise inflate "today" whenever someone scrolls
+    through old portal pages).
     """
     return bq_read(f"""
         WITH days AS (
@@ -82,6 +102,7 @@ def fetch_daily_loop_completed_14d() -> pd.DataFrame:
               AND completed_at IS NOT NULL
               AND DATE(completed_at, 'Asia/Kolkata')
                   >= DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 13 DAY)
+              AND {_OBSERVED_OOW_FILTER}
             GROUP BY d
         )
         SELECT
@@ -133,7 +154,8 @@ def fetch_daily_ingested_14d() -> pd.DataFrame:
 @cached(ttl=300)
 def fetch_operator_chain_breakdown_14d() -> pd.DataFrame:
     """Per-operator, per-chain-platform metrics (last 14 IST days). Excludes
-    auto_resolved (see fetch_operator_performance_14d for rationale)."""
+    auto_resolved and out-of-window observations (see
+    fetch_operator_performance_14d for rationale)."""
     return bq_read(f"""
         SELECT
             operator_email, chain_name, platform,
@@ -145,6 +167,7 @@ def fetch_operator_chain_breakdown_14d() -> pd.DataFrame:
         FROM `{TABLE_ASSIGNMENTS}`
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 14 DAY), 'Asia/Kolkata')
           AND status != 'auto_resolved'
+          AND {_OBSERVED_OOW_FILTER}
         GROUP BY operator_email, chain_name, platform
         ORDER BY operator_email, assigned DESC
     """)

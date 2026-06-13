@@ -190,11 +190,18 @@ def promote_auto_resolved_to_completed(order_id: str, operator_email: str) -> No
     now = _now_str()
     safe_order_id = _escape_sql(order_id)
     safe_email = _escape_sql(operator_email)
+    # observed_out_of_window is reset to FALSE: the previous OOW classification
+    # reflected the *observation* arriving past the platform deadline, but
+    # a Loop operator has now just submitted via the extension — that's
+    # fresh work that should count toward today's throughput. Without this
+    # reset, the operator's credit would be silently filtered out by
+    # operator_repository's `NOT IFNULL(observed_out_of_window, FALSE)`.
     bq_exec(f"""
         UPDATE `{TABLE_ASSIGNMENTS}` AS target
         SET status = 'completed',
             completed_at = TIMESTAMP('{now}'),
-            operator_email = '{safe_email}'
+            operator_email = '{safe_email}',
+            observed_out_of_window = FALSE
         WHERE target.assignment_id = (
             SELECT assignment_id
             FROM `{TABLE_ASSIGNMENTS}`
@@ -243,16 +250,17 @@ def bulk_insert_observed_assignments(items: list[dict]) -> None:
     """Insert one row per observed-responded item where no prior assignment
     existed. Each item must carry:
         review_uid, order_id, platform, chain_name (optional),
-        status         ('completed' for `missed_but_ours`,
-                        'auto_resolved' for `external`),
-        operator_email (matched Loop portal username for `missed_but_ours`;
-                        empty/None for `external`).
+        status                  ('completed' for `missed_but_ours`,
+                                 'auto_resolved' for `external`),
+        operator_email          (matched Loop portal username, or '' for external),
+        observed_out_of_window  (bool — True if review was past the platform
+                                 response deadline or not in automation_reviews
+                                 at observation time; filtered out of per-
+                                 operator and daily-throughput counts).
 
-    The `operator_email` column now reflects who actually replied (not who
-    observed the page). For `external` rows we deliberately store '' (empty
-    string) — the column is declared NOT NULL in BQ, and '' is the sentinel
-    for "no Loop operator did this work". The observer is still recorded in
-    ops_log via `performed_by`.
+    The `operator_email` column reflects who actually replied. The `''`
+    sentinel means "no Loop operator did this work" (the column is NOT NULL
+    in BQ). The observer is recorded in ops_log via `performed_by`.
     """
     if not items:
         return
@@ -262,10 +270,11 @@ def bulk_insert_observed_assignments(items: list[dict]) -> None:
     for item in items:
         status = item.get("status") or "auto_resolved"
         op_email = (item.get("operator_email") or "").strip()
+        oow_sql = "TRUE" if item.get("observed_out_of_window") else "FALSE"
         value_rows.append(
             f"('{uuid.uuid4()}', '{_escape_sql(item['review_uid'])}', '{_escape_sql(item['order_id'])}', "
             f"'{_escape_sql(op_email)}', '{_escape_sql(item.get('chain_name', ''))}', '{_escape_sql(item['platform'])}', "
-            f"0, '{_escape_sql(status)}', TIMESTAMP('{now}'), TIMESTAMP('{now}'), NULL, NULL)"
+            f"0, '{_escape_sql(status)}', TIMESTAMP('{now}'), TIMESTAMP('{now}'), NULL, NULL, {oow_sql})"
         )
     batch_size = 500
     for start in range(0, len(value_rows), batch_size):
@@ -274,7 +283,7 @@ def bulk_insert_observed_assignments(items: list[dict]) -> None:
             INSERT INTO `{TABLE_ASSIGNMENTS}`
                 (assignment_id, review_uid, order_id, operator_email,
                  chain_name, platform, days_left, status, assigned_at, completed_at,
-                 platform_reply_id, platform_coupon_id)
+                 platform_reply_id, platform_coupon_id, observed_out_of_window)
             VALUES {', '.join(batch)}
         """)
 
@@ -282,9 +291,10 @@ def bulk_insert_observed_assignments(items: list[dict]) -> None:
 def bulk_flip_pending_to(
     review_uids: list[str], order_ids: list[str],
     new_status: str, new_operator_email: str,
+    observed_out_of_window: bool = False,
 ) -> None:
     """Flip pending assignments matching the given review_uids/order_ids to
-    `new_status`, and reset `operator_email`.
+    `new_status`, reset `operator_email`, and stamp `observed_out_of_window`.
 
     `new_status` should be 'completed' (responder matched the slug's Loop
     portal account — `missed_but_ours`) or 'auto_resolved' (anyone else —
@@ -293,6 +303,11 @@ def bulk_flip_pending_to(
     pending assignee is cleared (they didn't actually do the work). The
     operator_email column is NOT NULL in BQ — '' is the sentinel for "no
     Loop operator did this work".
+
+    `observed_out_of_window` is True when the original review_timestamp is
+    past the platform deadline (DD 7d, UE 14d) at observation time. Almost
+    always False for the pending-flip path — the cron only creates pending
+    rows for in-window reviews — but threaded through for completeness.
     """
     now = _now_str()
     rev_quoted = ", ".join(f"'{_escape_sql(u)}'" for u in review_uids if u)
@@ -306,11 +321,13 @@ def bulk_flip_pending_to(
         return
     safe_email = _escape_sql(new_operator_email or "")
     safe_status = _escape_sql(new_status)
+    oow_sql = "TRUE" if observed_out_of_window else "FALSE"
     bq_exec(f"""
         UPDATE `{TABLE_ASSIGNMENTS}`
         SET status = '{safe_status}',
             completed_at = TIMESTAMP('{now}'),
-            operator_email = '{safe_email}'
+            operator_email = '{safe_email}',
+            observed_out_of_window = {oow_sql}
         WHERE status = 'pending' AND ({' OR '.join(where_clauses)})
     """)
 

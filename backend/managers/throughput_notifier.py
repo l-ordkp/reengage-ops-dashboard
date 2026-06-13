@@ -46,11 +46,16 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
             GROUP BY platform
         ),
         completed AS (
+            -- Excludes observed_out_of_window rows so late observations of
+            -- already-replied old reviews don't inflate yesterday's count.
+            -- The actual reply happened days/weeks earlier via the portal UI
+            -- — counting it as "yesterday's throughput" misleads readers.
             SELECT platform, COUNT(*) AS loop_completed
             FROM `{TABLE_ASSIGNMENTS}`
             WHERE status = 'completed'
               AND completed_at IS NOT NULL
               AND DATE(completed_at, 'Asia/Kolkata') = DATE('{target_date}')
+              AND NOT IFNULL(observed_out_of_window, FALSE)
             GROUP BY platform
         )
         SELECT

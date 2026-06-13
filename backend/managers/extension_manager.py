@@ -22,6 +22,7 @@ from backend.repositories.assignment_repository import (
 )
 from backend.repositories.extension_repository import (
     fetch_loop_usernames_for_stores,
+    fetch_review_age_status,
     is_operator_approved,
     lookup_response_by_order,
     lookup_review_uid_by_order,
@@ -199,8 +200,17 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
     if not valid:
         return {
             "processed": 0, "skipped": 0, "flipped": 0, "inserted": 0,
-            "missed_but_ours": 0, "external": 0,
+            "missed_but_ours": 0, "external": 0, "out_of_window": 0,
         }
+
+    # Classify each item as in-window or out-of-window against the platform
+    # response deadline. Out-of-window rows still get written (so Chain Value
+    # captures the late discovery), but the assignment row is stamped with
+    # `observed_out_of_window=TRUE` and downstream per-operator + daily-
+    # throughput reads filter it out so it doesn't inflate "today's" counts.
+    age_status = fetch_review_age_status(valid)
+    for v in valid:
+        v["observed_out_of_window"] = age_status.get(v["review_uid"], "out_of_window") == "out_of_window"
 
     existing = fetch_assignments_by_ids(
         review_uids=[v["review_uid"] for v in valid],
@@ -293,27 +303,38 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
     # to NULL for `external` (clearing the original pending assignee since
     # they didn't actually do the work).
     if to_flip_loop:
-        # Group by matched username so each batch UPDATE writes one consistent
-        # operator_email. In practice all matches in a single batch will share
-        # a username (per slug), but grouping defends against the rare
-        # multi-username store case.
-        by_match: dict[str, list[dict]] = {}
+        # Group by (matched username, observed_out_of_window) so each batch
+        # UPDATE writes one consistent (operator_email, flag) pair. In
+        # practice all flips in a single batch will share a username per
+        # slug; the secondary grouping by the OOW flag is defensive — pending
+        # rows are virtually always in-window (cron only creates pending for
+        # fresh reviews), but we want the grouping to be correct if a stale
+        # pending row ever ends up in this code path.
+        by_key: dict[tuple[str, bool], list[dict]] = {}
         for item in to_flip_loop:
-            by_match.setdefault(item["_matched_loop_username"], []).append(item)
-        for username, group in by_match.items():
+            key = (item["_matched_loop_username"], bool(item.get("observed_out_of_window")))
+            by_key.setdefault(key, []).append(item)
+        for (username, oow), group in by_key.items():
             bulk_flip_pending_to(
                 review_uids=[v["review_uid"] for v in group],
                 order_ids=[v["order_id"] for v in group],
                 new_status="completed",
                 new_operator_email=username,
+                observed_out_of_window=oow,
             )
     if to_flip_ext:
-        bulk_flip_pending_to(
-            review_uids=[v["review_uid"] for v in to_flip_ext],
-            order_ids=[v["order_id"] for v in to_flip_ext],
-            new_status="auto_resolved",
-            new_operator_email="",
-        )
+        # Same grouping by the OOW flag so the UPDATE writes a single value.
+        by_oow: dict[bool, list[dict]] = {}
+        for item in to_flip_ext:
+            by_oow.setdefault(bool(item.get("observed_out_of_window")), []).append(item)
+        for oow, group in by_oow.items():
+            bulk_flip_pending_to(
+                review_uids=[v["review_uid"] for v in group],
+                order_ids=[v["order_id"] for v in group],
+                new_status="auto_resolved",
+                new_operator_email="",
+                observed_out_of_window=oow,
+            )
     if to_insert_loop or to_insert_ext:
         insert_payload = []
         for item in to_insert_loop:
@@ -324,6 +345,7 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
                 "chain_name": "",
                 "status": "completed",
                 "operator_email": item["_matched_loop_username"],
+                "observed_out_of_window": bool(item.get("observed_out_of_window")),
             })
         for item in to_insert_ext:
             insert_payload.append({
@@ -333,6 +355,7 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
                 "chain_name": "",
                 "status": "auto_resolved",
                 "operator_email": "",
+                "observed_out_of_window": bool(item.get("observed_out_of_window")),
             })
         bulk_insert_observed_assignments(insert_payload)
 
@@ -387,6 +410,9 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
     if flipped_count or inserted_count:
         fetch_reviews_14d.clear()
 
+    out_of_window_count = sum(
+        1 for v in valid if v.get("observed_out_of_window")
+    )
     return {
         "processed": len(valid),
         "skipped": skipped,
@@ -394,4 +420,5 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
         "inserted": inserted_count,
         "missed_but_ours": len(to_flip_loop) + len(to_insert_loop),
         "external": len(to_flip_ext) + len(to_insert_ext),
+        "out_of_window": out_of_window_count,
     }
