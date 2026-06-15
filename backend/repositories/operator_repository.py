@@ -4,7 +4,7 @@ from __future__ import annotations
 import pandas as pd
 
 from backend.clients.bq_client import bq_read
-from backend.config import TABLE_ASSIGNMENTS
+from backend.config import TABLE_ASSIGNMENTS, TABLE_USERS
 from backend.utils.cache import cached
 
 
@@ -17,6 +17,17 @@ _OBSERVED_OOW_FILTER = (
     # replies (Chain Value counts them) but shouldn't inflate operators'
     # "today's work" view since the actual reply was sent days/weeks ago.
     "NOT IFNULL(observed_out_of_window, FALSE)"
+)
+
+# Keep only rows whose operator_email is an actual team member. The extension's
+# `missed_but_ours` flow stamps `operator_email` with the matched Loop *portal
+# username* (e.g. haven_hot_chicken@fmtfoods.net) — that's the account the reply
+# was posted from, NOT a Loop operator. Those rows are status='completed', so
+# the auto_resolved filter doesn't catch them; without this join they surface as
+# phantom operators in the leaderboard. Matched case-insensitively because auth
+# normalises emails with LOWER().
+_OPERATOR_IN_USERS_FILTER = (
+    f"LOWER(operator_email) IN (SELECT LOWER(email) FROM `{TABLE_USERS}`)"
 )
 
 
@@ -33,6 +44,11 @@ def fetch_operator_performance_14d() -> pd.DataFrame:
     late observations of reviews already past the platform deadline (the
     Loop reply happened days/weeks ago via the portal UI). Counting them
     would credit operators for "today's work" that was actually historical.
+
+    Finally, joins to the users table (`_OPERATOR_IN_USERS_FILTER`) so only
+    real team members appear — the `missed_but_ours` flow stamps the matched
+    Loop portal username into `operator_email`, which would otherwise surface
+    portal accounts (e.g. haven_hot_chicken@fmtfoods.net) as phantom operators.
     """
     return bq_read(f"""
         SELECT
@@ -49,6 +65,7 @@ def fetch_operator_performance_14d() -> pd.DataFrame:
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 14 DAY), 'Asia/Kolkata')
           AND status != 'auto_resolved'
           AND {_OBSERVED_OOW_FILTER}
+          AND {_OPERATOR_IN_USERS_FILTER}
         GROUP BY operator_email
     """)
 
@@ -71,6 +88,7 @@ def fetch_operator_daily_breakdown_14d() -> pd.DataFrame:
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 14 DAY), 'Asia/Kolkata')
           AND status != 'auto_resolved'
           AND {_OBSERVED_OOW_FILTER}
+          AND {_OPERATOR_IN_USERS_FILTER}
         GROUP BY operator_email, assign_date
         ORDER BY assign_date DESC, operator_email
     """)
@@ -168,6 +186,7 @@ def fetch_operator_chain_breakdown_14d() -> pd.DataFrame:
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 14 DAY), 'Asia/Kolkata')
           AND status != 'auto_resolved'
           AND {_OBSERVED_OOW_FILTER}
+          AND {_OPERATOR_IN_USERS_FILTER}
         GROUP BY operator_email, chain_name, platform
         ORDER BY operator_email, assigned DESC
     """)
