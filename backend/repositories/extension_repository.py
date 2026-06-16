@@ -30,9 +30,9 @@ def _escape(value: str) -> str:
 _LOOKUP_WINDOW_DAYS = 30
 
 
-def _recent_partition_pred(col: str = "review_timestamp") -> str:
+def _recent_partition_pred(col: str = "review_timestamp", days: int = _LOOKUP_WINDOW_DAYS) -> str:
     return (
-        f"({col} >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {_LOOKUP_WINDOW_DAYS} DAY)"
+        f"({col} >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)"
         f" OR {col} IS NULL)"
     )
 
@@ -54,6 +54,16 @@ def lookup_response_by_order(order_id: str) -> dict | None:
             rr.response_text, rr.coupon_value, rr.response_type, rr.response_sent,
             ar.customer_name, ar.review_text, ar.star_rating, ar.slug, ar.is_replied
         FROM `{PROJECT}.{TABLE_REVIEW_RESPONSES}` rr
+        -- The partition predicate lives in the ON clause (not WHERE) on purpose:
+        -- it must NOT drop the review_responses row. We always want to return the
+        -- generated response_text/coupon/etc., even when there is no matching
+        -- automation_reviews row (e.g. a review dbt missed, or one older than the
+        -- prune window). The trade-off: for reviews older than the window the
+        -- ar.* enrichment (customer_name, star_rating, slug, is_replied) comes
+        -- back NULL. That's acceptable — the extension only works reviews inside
+        -- the 7/14d reply window (well within {_LOOKUP_WINDOW_DAYS}d), so any
+        -- review it shows has accurate enrichment; only out-of-scope old reviews
+        -- get NULL ar.* (is_replied then reads as False, which is harmless here).
         LEFT JOIN `{PROJECT}.{TABLE_AUTOMATION_REVIEWS}` ar
             ON rr.order_id = ar.order_id
            AND {_recent_partition_pred("ar.review_timestamp")}
@@ -167,8 +177,7 @@ def fetch_review_age_status(items: list[dict]) -> dict[str, str]:
           -- Bare-column predicate so BigQuery can prune partitions. The COALESCE
           -- filters above can't prune (partition col wrapped in a function); the
           -- in_window cutoff is at most 14 days, so a 15-day bound is safe.
-          AND (ar.review_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 15 DAY)
-               OR ar.review_timestamp IS NULL)
+          AND {_recent_partition_pred("ar.review_timestamp", days=15)}
     """)
     in_window_uids = {row["review_uid"] for row in rows if row.get("review_uid")}
     return {
