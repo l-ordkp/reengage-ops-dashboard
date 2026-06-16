@@ -19,6 +19,24 @@ def _escape(value: str) -> str:
     return (value or "").replace("'", "''")
 
 
+# automation_reviews is DAY-partitioned on review_timestamp but the extension
+# looks rows up by order_id/review_id, which can't prune — so every lookup used
+# to scan the whole table (~1 GiB+ each, thousands of times/day). The extension
+# only ever touches reviews currently being worked, which sit well inside the
+# platform reply window (DoorDash 7d / UberEats 14d). A 30-day bare-column
+# predicate (2x the longest window) prunes the scan to recent partitions while
+# staying safe for late processing; the IS NULL arm keeps rows that have no
+# review_timestamp and fall back to order_timestamp.
+_LOOKUP_WINDOW_DAYS = 30
+
+
+def _recent_partition_pred(col: str = "review_timestamp") -> str:
+    return (
+        f"({col} >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {_LOOKUP_WINDOW_DAYS} DAY)"
+        f" OR {col} IS NULL)"
+    )
+
+
 def is_operator_approved(email: str) -> bool:
     safe = email.lower().replace("'", "''")
     rows = bq_read_dicts(f"""
@@ -38,6 +56,7 @@ def lookup_response_by_order(order_id: str) -> dict | None:
         FROM `{PROJECT}.{TABLE_REVIEW_RESPONSES}` rr
         LEFT JOIN `{PROJECT}.{TABLE_AUTOMATION_REVIEWS}` ar
             ON rr.order_id = ar.order_id
+           AND {_recent_partition_pred("ar.review_timestamp")}
         WHERE rr.order_id = '{safe_id}'
         LIMIT 1
     """)
@@ -50,7 +69,8 @@ def lookup_review_uid_by_order(order_id: str) -> str:
     rows = bq_read_dicts(f"""
         SELECT COALESCE(review_id, order_id) AS review_uid
         FROM `{PROJECT}.{TABLE_AUTOMATION_REVIEWS}`
-        WHERE order_id = '{safe_id}' OR review_id = '{safe_id}'
+        WHERE (order_id = '{safe_id}' OR review_id = '{safe_id}')
+          AND {_recent_partition_pred()}
         LIMIT 1
     """)
     return rows[0]["review_uid"] if rows else order_id
@@ -144,6 +164,11 @@ def fetch_review_age_status(items: list[dict]) -> dict[str, str]:
           -- Upper bound: reject future-dated review_timestamps (clock skew /
           -- malformed source data) so they don't silently classify as in_window.
           AND COALESCE(ar.review_timestamp, ar.order_timestamp) <= CURRENT_TIMESTAMP()
+          -- Bare-column predicate so BigQuery can prune partitions. The COALESCE
+          -- filters above can't prune (partition col wrapped in a function); the
+          -- in_window cutoff is at most 14 days, so a 15-day bound is safe.
+          AND (ar.review_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 15 DAY)
+               OR ar.review_timestamp IS NULL)
     """)
     in_window_uids = {row["review_uid"] for row in rows if row.get("review_uid")}
     return {
@@ -165,7 +190,8 @@ def resolve_canonical_order_id(maybe_id: str) -> str | None:
     rows = bq_read_dicts(f"""
         SELECT order_id
         FROM `{PROJECT}.{TABLE_AUTOMATION_REVIEWS}`
-        WHERE order_id = '{safe_id}' OR review_id = '{safe_id}'
+        WHERE (order_id = '{safe_id}' OR review_id = '{safe_id}')
+          AND {_recent_partition_pred()}
         LIMIT 1
     """)
     return rows[0]["order_id"] if rows else None
