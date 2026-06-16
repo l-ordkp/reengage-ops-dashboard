@@ -63,6 +63,17 @@ def fetch_reviews_14d() -> pd.DataFrame:
             ON automation_review.slug = slug_mapping.slug
         WHERE COALESCE(automation_review.review_timestamp, automation_review.order_timestamp)
               >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
+          -- Prune the partition. automation_reviews is DAY-partitioned on
+          -- review_timestamp, but the COALESCE filter above wraps the partition
+          -- column in a function, so BigQuery can't prune and scans all ~727
+          -- partitions (~4.4 GiB) on every call. This bare-column predicate lets
+          -- it prune to recent partitions; the IS NULL arm keeps rows with no
+          -- review_timestamp that fall back to order_timestamp. 1 extra day of
+          -- slack covers any timezone rounding in the COALESCE comparison.
+          AND (
+              automation_review.review_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 15 DAY))
+              OR automation_review.review_timestamp IS NULL
+          )
           AND EXISTS (
               SELECT 1
               FROM `{TABLE_REVIEW_RESPONSE_CFG}` AS response_config
@@ -265,6 +276,17 @@ def fetch_chain_totals_14d() -> pd.DataFrame:
             ON lc_rid.completed_id = automation_review.review_id
         WHERE COALESCE(automation_review.review_timestamp, automation_review.order_timestamp)
               >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
+          -- Prune the partition. automation_reviews is DAY-partitioned on
+          -- review_timestamp, but the COALESCE filter above wraps the partition
+          -- column in a function, so BigQuery can't prune and scans all ~727
+          -- partitions (~4.4 GiB) on every call. This bare-column predicate lets
+          -- it prune to recent partitions; the IS NULL arm keeps rows with no
+          -- review_timestamp that fall back to order_timestamp. 1 extra day of
+          -- slack covers any timezone rounding in the COALESCE comparison.
+          AND (
+              automation_review.review_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 15 DAY))
+              OR automation_review.review_timestamp IS NULL
+          )
           AND EXISTS (
               SELECT 1
               FROM `{TABLE_REVIEW_RESPONSE_CFG}` AS response_config

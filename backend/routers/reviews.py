@@ -72,15 +72,27 @@ def generate_batch(body: GenerateBatchBody, user: dict = Depends(get_current_use
     from threading import Lock
 
     from backend.managers.response_manager import find_matching_config, generate_and_save
+    from backend.repositories.response_repository import fetch_responded_order_ids
     from fastapi import HTTPException
 
-    # Clear the cache up front so this chunk sees any response_text values
-    # written by an earlier chunk in the same FE-driven run.
-    fetch_reviews_14d.clear()
+    # Review text/metadata doesn't change within a run, so reuse the cached
+    # 14-day reviews instead of busting the cache and re-scanning BigQuery.
+    # Cross-chunk dedup (skipping reviews an earlier chunk just generated) is
+    # handled below by reading already-responded order_ids straight from
+    # PostgreSQL — authoritative and lag-free, for a fraction of the cost.
     df = fetch_reviews_14d()
     configs = fetch_configs_for_matching()
     if not configs:
         raise HTTPException(status_code=400, detail="No response configs found")
+
+    # Order_ids in this chunk that already have a response (skip unless forced).
+    if body.force:
+        already_responded: set = set()
+    else:
+        chunk_df = df[df["review_uid"].isin(set(body.review_uids))]
+        already_responded = fetch_responded_order_ids(
+            chunk_df["order_id"].dropna().unique().tolist()
+        )
 
     results = {"success": 0, "skipped": 0, "failed": 0, "details": []}
     results_lock = Lock()
@@ -98,8 +110,13 @@ def generate_batch(body: GenerateBatchBody, user: dict = Depends(get_current_use
 
         review_dict = row.iloc[0].to_dict()
 
+        # Skip if already generated — either per the cached reviews snapshot
+        # (prior runs) or the fresh PostgreSQL lookup (earlier chunk this run).
         existing_response = review_dict.get("response_text")
-        if existing_response and pd.notna(existing_response) and not body.force:
+        if not body.force and (
+            review_dict.get("order_id") in already_responded
+            or (existing_response and pd.notna(existing_response))
+        ):
             record({"uid": uid, "status": "skipped", "reason": "already generated"}, "skipped")
             return
 

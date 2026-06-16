@@ -26,6 +26,32 @@ def _safe_int(val) -> Optional[int]:
         return None
 
 
+def fetch_responded_order_ids(order_ids: list) -> set:
+    """
+    Return the subset of `order_ids` that already have a non-empty AI response.
+
+    Used by the generate-batch endpoint to skip already-generated reviews
+    across chunks of the same run. Reading PostgreSQL directly is authoritative
+    and lag-free, so we no longer bust the fetch_reviews_14d() cache and re-scan
+    BigQuery (~4 GiB) just to refresh the joined response_text.
+    """
+    ids = [str(o) for o in order_ids if o is not None and not pd.isna(o)]
+    if not ids:
+        return set()
+    session = get_pg_session()
+    try:
+        rows = (
+            session.query(ReviewResponse.order_id)
+            .filter(ReviewResponse.order_id.in_(ids))
+            .filter(ReviewResponse.response_text.isnot(None))
+            .filter(ReviewResponse.response_text != "")
+            .all()
+        )
+        return {r[0] for r in rows}
+    finally:
+        session.close()
+
+
 def upsert_response(
     review: dict,
     response_text: str,
