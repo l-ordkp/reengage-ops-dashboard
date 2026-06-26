@@ -50,6 +50,14 @@ export function formatIST(iso: string | Date | null | undefined): string {
   );
 }
 
+// Today's date as a "yyyy-MM-dd" string in IST — the operator-workday timezone
+// the date-scoped tables filter on. Using the viewer's local timezone would
+// give a US-based lead the wrong workday around the IST midnight boundary
+// (showing stale or empty tables on load). en-CA yields ISO yyyy-MM-dd.
+export function todayIST(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+
 // review_date is a date-only string in the restaurant's local market (US/CT),
 // because the underlying review was posted by a US customer. Don't convert
 // it — just label so an IST viewer doesn't mis-read it as their own date.

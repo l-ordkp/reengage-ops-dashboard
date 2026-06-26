@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { format } from "date-fns";
 import PortalLoginLink from "@/components/shared/PortalLoginLink";
 import { useAuth } from "@/providers/AuthProvider";
 import {
@@ -16,7 +15,7 @@ import {
   type DailyLoopCompleted,
 } from "@/hooks/useOperators";
 import type { OperatorPerformance, DailyBreakdown, Review } from "@/lib/types";
-import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON, formatHoursLeft, formatIST, formatReviewDate } from "@/lib/constants";
+import { PRIORITY_COLOR, STATUS_COLOR, PRIORITY_ICON, STATUS_ICON, formatHoursLeft, formatIST, formatReviewDate, todayIST } from "@/lib/constants";
 
 export default function OperatorsPage() {
   const { isLead } = useAuth();
@@ -25,8 +24,10 @@ export default function OperatorsPage() {
   const { data: dailyIngestedData } = useDailyIngested();
   // Default the date-scoped tables (QC + Date-wise Completion) to the current
   // day so they don't render the full unbounded history on first load. Leads
-  // can widen the range (or clear it) to pull everything.
-  const today = format(new Date(), "yyyy-MM-dd");
+  // can widen the range (or clear it) to pull everything. Computed in IST (the
+  // operator workday) so a US-based lead doesn't get the wrong day at the IST
+  // midnight boundary.
+  const today = todayIST();
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [dailyOperatorFilter, setDailyOperatorFilter] = useState("");
