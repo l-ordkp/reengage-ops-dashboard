@@ -23,14 +23,18 @@ export default function OperatorsPage() {
   const { data: perfData, isLoading: perfLoading } = useOperatorPerformance();
   const { data: dailyLoopData } = useDailyLoopCompleted();
   const { data: dailyIngestedData } = useDailyIngested();
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // Default the date-scoped tables (QC + Date-wise Completion) to the current
+  // day so they don't render the full unbounded history on first load. Leads
+  // can widen the range (or clear it) to pull everything.
+  const today = format(new Date(), "yyyy-MM-dd");
+  const [dateFrom, setDateFrom] = useState(today);
+  const [dateTo, setDateTo] = useState(today);
   const [dailyOperatorFilter, setDailyOperatorFilter] = useState("");
   const { data: dailyData } = useDailyBreakdown(dateFrom || undefined, dateTo || undefined);
   const [selectedChainOp, setSelectedChainOp] = useState("");
   const { data: operatorQueue, isLoading: queueLoading } = useOperatorQueue(selectedChainOp || undefined);
-  const [qcDateFrom, setQcDateFrom] = useState("");
-  const [qcDateTo, setQcDateTo] = useState("");
+  const [qcDateFrom, setQcDateFrom] = useState(today);
+  const [qcDateTo, setQcDateTo] = useState(today);
   const { data: qcData } = useQCSummary(qcDateFrom || undefined, qcDateTo || undefined);
   const { data: mismatchData } = useQCMismatches(qcDateFrom || undefined, qcDateTo || undefined);
   const [mismatchOperator, setMismatchOperator] = useState("");
@@ -330,6 +334,14 @@ export default function OperatorsPage() {
               {operatorEmails.map((e) => <option key={e} value={e}>{e}</option>)}
             </select>
           </div>
+          {(dateFrom || dateTo) && (
+            <div className="flex items-end">
+              <button onClick={() => { setDateFrom(""); setDateTo(""); }}
+                className="px-3 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs text-gray-300 cursor-pointer">
+                Clear
+              </button>
+            </div>
+          )}
         </div>
         {daily.length > 0 ? (() => {
           const filteredDaily = dailyOperatorFilter
