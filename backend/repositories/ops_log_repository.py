@@ -20,6 +20,15 @@ def _now_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _validate_date(value: str) -> str:
+    """Validate a user-supplied YYYY-MM-DD string before interpolating it into
+    SQL. date_from/date_to arrive as query params, so interpolating them raw
+    would allow SQL injection. A date has a fixed shape — parse it and re-emit a
+    canonical YYYY-MM-DD string, rejecting anything else."""
+    from datetime import datetime
+    return datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d")
+
+
 @cached(ttl=60)
 def fetch_recent_ops_log(limit: int = 500) -> pd.DataFrame:
     return bq_read(f"""
@@ -42,9 +51,9 @@ def fetch_qc_log(date_from: str | None = None, date_to: str | None = None) -> pd
         "remarks LIKE '%resp:%'",
     ]
     if date_from:
-        where_parts.append(f"DATE(processing_timestamp, 'Asia/Kolkata') >= DATE('{date_from}')")
+        where_parts.append(f"DATE(processing_timestamp, 'Asia/Kolkata') >= DATE('{_validate_date(date_from)}')")
     if date_to:
-        where_parts.append(f"DATE(processing_timestamp, 'Asia/Kolkata') <= DATE('{date_to}')")
+        where_parts.append(f"DATE(processing_timestamp, 'Asia/Kolkata') <= DATE('{_validate_date(date_to)}')")
     where_clause = " AND ".join(where_parts)
     return bq_read(f"""
         SELECT review_uid, operator_email, remarks, processing_timestamp
@@ -71,11 +80,11 @@ def fetch_qc_mismatches(
     ]
     if date_from:
         where_parts.append(
-            f"DATE(ops_log.processing_timestamp, 'Asia/Kolkata') >= DATE('{date_from}')"
+            f"DATE(ops_log.processing_timestamp, 'Asia/Kolkata') >= DATE('{_validate_date(date_from)}')"
         )
     if date_to:
         where_parts.append(
-            f"DATE(ops_log.processing_timestamp, 'Asia/Kolkata') <= DATE('{date_to}')"
+            f"DATE(ops_log.processing_timestamp, 'Asia/Kolkata') <= DATE('{_validate_date(date_to)}')"
         )
     where_clause = " AND ".join(where_parts)
 
