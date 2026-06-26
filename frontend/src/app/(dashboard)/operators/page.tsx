@@ -162,22 +162,11 @@ export default function OperatorsPage() {
         <h2 className="text-lg font-semibold mb-3">Response QC Accuracy</h2>
         <p className="text-sm text-gray-400 mb-3">Did operators copy-paste the AI response and coupon correctly?</p>
         <div className="flex gap-4 mb-4 flex-wrap items-end">
-          <div>
-            <label className="text-xs text-gray-400 block mb-1">From</label>
-            <input type="date" value={qcDateFrom} onChange={(e) => setQcDateFrom(e.target.value)}
-              className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm" />
-          </div>
-          <div>
-            <label className="text-xs text-gray-400 block mb-1">To</label>
-            <input type="date" value={qcDateTo} onChange={(e) => setQcDateTo(e.target.value)}
-              className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm" />
-          </div>
-          {(qcDateFrom || qcDateTo) && (
-            <button onClick={() => { setQcDateFrom(""); setQcDateTo(""); }}
-              className="px-3 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs text-gray-300 cursor-pointer">
-              Clear
-            </button>
-          )}
+          <DateRangeFilter
+            from={qcDateFrom} to={qcDateTo}
+            onFrom={setQcDateFrom} onTo={setQcDateTo}
+            onClear={() => { setQcDateFrom(""); setQcDateTo(""); }}
+          />
         </div>
         {qcData && qcData.length > 0 ? (
           <div className="overflow-x-auto rounded-lg border border-gray-800">
@@ -316,17 +305,12 @@ export default function OperatorsPage() {
       <div>
         <h2 className="text-lg font-semibold mb-3">Date-wise Completion</h2>
         <p className="text-sm text-gray-400 mb-3">Which operator missed the most reviews on which day.</p>
-        <div className="flex gap-4 mb-4 flex-wrap">
-          <div>
-            <label className="text-xs text-gray-400 block mb-1">From</label>
-            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
-              className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm" />
-          </div>
-          <div>
-            <label className="text-xs text-gray-400 block mb-1">To</label>
-            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
-              className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm" />
-          </div>
+        <div className="flex gap-4 mb-4 flex-wrap items-end">
+          <DateRangeFilter
+            from={dateFrom} to={dateTo}
+            onFrom={setDateFrom} onTo={setDateTo}
+            onClear={() => { setDateFrom(""); setDateTo(""); }}
+          />
           <div>
             <label className="text-xs text-gray-400 block mb-1">Operator</label>
             <select value={dailyOperatorFilter} onChange={(e) => setDailyOperatorFilter(e.target.value)}
@@ -335,14 +319,6 @@ export default function OperatorsPage() {
               {operatorEmails.map((e) => <option key={e} value={e}>{e}</option>)}
             </select>
           </div>
-          {(dateFrom || dateTo) && (
-            <div className="flex items-end">
-              <button onClick={() => { setDateFrom(""); setDateTo(""); }}
-                className="px-3 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs text-gray-300 cursor-pointer">
-                Clear
-              </button>
-            </div>
-          )}
         </div>
         {daily.length > 0 ? (() => {
           const filteredDaily = dailyOperatorFilter
@@ -498,6 +474,47 @@ export default function OperatorsPage() {
       </div>
 
     </div>
+  );
+}
+
+// Shared From/To date-range filter with a Clear button (shown only once a
+// bound is set). Used by both the QC and Date-wise Completion sections so they
+// render and behave identically. Renders bare fields (no wrapper) so callers
+// can place sibling filters in the same flex row.
+function DateRangeFilter({
+  from,
+  to,
+  onFrom,
+  onTo,
+  onClear,
+}: {
+  from: string;
+  to: string;
+  onFrom: (v: string) => void;
+  onTo: (v: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <>
+      <div>
+        <label className="text-xs text-gray-400 block mb-1">From</label>
+        <input type="date" value={from} onChange={(e) => onFrom(e.target.value)}
+          className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label className="text-xs text-gray-400 block mb-1">To</label>
+        <input type="date" value={to} onChange={(e) => onTo(e.target.value)}
+          className="bg-[#262730] border border-gray-700 rounded-lg px-3 py-2 text-sm" />
+      </div>
+      {(from || to) && (
+        <div className="flex items-end">
+          <button onClick={onClear}
+            className="px-3 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs text-gray-300 cursor-pointer">
+            Clear
+          </button>
+        </div>
+      )}
+    </>
   );
 }
 

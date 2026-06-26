@@ -42,9 +42,9 @@ def fetch_qc_log(date_from: str | None = None, date_to: str | None = None) -> pd
         "remarks LIKE '%resp:%'",
     ]
     if date_from:
-        where_parts.append(f"DATE(processing_timestamp, 'America/Chicago') >= DATE('{date_from}')")
+        where_parts.append(f"DATE(processing_timestamp, 'Asia/Kolkata') >= DATE('{date_from}')")
     if date_to:
-        where_parts.append(f"DATE(processing_timestamp, 'America/Chicago') <= DATE('{date_to}')")
+        where_parts.append(f"DATE(processing_timestamp, 'Asia/Kolkata') <= DATE('{date_to}')")
     where_clause = " AND ".join(where_parts)
     return bq_read(f"""
         SELECT review_uid, operator_email, remarks, processing_timestamp
@@ -71,11 +71,11 @@ def fetch_qc_mismatches(
     ]
     if date_from:
         where_parts.append(
-            f"DATE(ops_log.processing_timestamp, 'America/Chicago') >= DATE('{date_from}')"
+            f"DATE(ops_log.processing_timestamp, 'Asia/Kolkata') >= DATE('{date_from}')"
         )
     if date_to:
         where_parts.append(
-            f"DATE(ops_log.processing_timestamp, 'America/Chicago') <= DATE('{date_to}')"
+            f"DATE(ops_log.processing_timestamp, 'Asia/Kolkata') <= DATE('{date_to}')"
         )
     where_clause = " AND ".join(where_parts)
 
