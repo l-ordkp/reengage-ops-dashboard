@@ -145,7 +145,9 @@ def _fetch_funnel_rows(start_date: str, end_date: str) -> list[dict]:
 def _format_window(start_date: str, end_date: str) -> str:
     s = datetime.strptime(start_date, "%Y-%m-%d")
     e = datetime.strptime(end_date, "%Y-%m-%d")
-    return f"{s.strftime('%d %b')} – {e.strftime('%d %b %Y')}"
+    # Show the start year too when the week straddles a year boundary (e.g. late Dec).
+    start_fmt = "%d %b" if s.year == e.year else "%d %b %Y"
+    return f"{s.strftime(start_fmt)} – {e.strftime('%d %b %Y')}"
 
 
 def _expired_sort_key(bucket: str) -> int:
