@@ -65,7 +65,7 @@ def trigger_weekly_funnel(
     user_agent: str = Header(None),
     authorization: str = Header(None),
 ):
-    """Post last week's (Mon–Sun) in-scope review funnel to Slack.
+    """Post last week's (Fri–Thu) in-scope review funnel to Slack.
 
     Cloud Scheduler bypasses JWT (User-Agent check); manual triggers require a
     lead/manager JWT. The notifier swallows its own errors, so this always 200s.
