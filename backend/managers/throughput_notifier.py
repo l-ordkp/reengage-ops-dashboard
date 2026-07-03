@@ -1,4 +1,4 @@
-"""Post yesterday's ingested vs. loop-completed throughput to Slack.
+"""Post yesterday's ingested / loop-completed / expired throughput to Slack.
 
 Runs immediately after the daily 8 AM IST assignment cron. Reads the
 assignments table, splits by platform (Doordash/UberEats) plus a total,
@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from backend.clients.bq_client import bq_read
 from backend.clients.slack_client import post_message
-from backend.config import TABLE_ASSIGNMENTS
+from backend.config import TABLE_ASSIGNMENTS, TABLE_AUTOMATION_REVIEWS
 
 
 _CHANNEL = "#reengage-bot-notifications"
@@ -57,14 +57,43 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
               AND DATE(completed_at, 'Asia/Kolkata') = DATE('{target_date}')
               AND NOT IFNULL(observed_out_of_window, FALSE)
             GROUP BY platform
+        ),
+        expired AS (
+            -- Assignments have no expired_at stamp (expire_stale_assignments
+            -- only flips status), so an expiry is attributed to the day its
+            -- platform deadline fell — the same review_timestamp + N days
+            -- rule the status engine uses. The daily cron marks expiries
+            -- before this notifier runs, so yesterday's deadlines are
+            -- already flagged by post time.
+            SELECT a.platform, COUNT(DISTINCT a.review_uid) AS expired
+            FROM `{TABLE_ASSIGNMENTS}` a
+            JOIN `{TABLE_AUTOMATION_REVIEWS}` ar ON ar.order_id = a.order_id
+            WHERE a.status = 'expired'
+              -- Prune automation_reviews partitions (DAY-partitioned on
+              -- review_timestamp). A deadline landing on target_date means the
+              -- review was posted at most 14 days earlier (UberEats window);
+              -- 16 days adds slack for the IST conversion. The IS NULL arm
+              -- keeps rows that fall back to order_timestamp.
+              AND (
+                  ar.review_timestamp >= TIMESTAMP(DATE_SUB(DATE('{target_date}'), INTERVAL 16 DAY))
+                  OR ar.review_timestamp IS NULL
+              )
+              AND DATE(
+                TIMESTAMP_ADD(
+                  COALESCE(ar.review_timestamp, ar.order_timestamp),
+                  INTERVAL CASE WHEN a.platform = 'UberEats' THEN 14 ELSE 7 END DAY
+                ), 'Asia/Kolkata') = DATE('{target_date}')
+            GROUP BY a.platform
         )
         SELECT
             platforms.platform,
             COALESCE(ingested.ingested, 0) AS ingested,
-            COALESCE(completed.loop_completed, 0) AS loop_completed
+            COALESCE(completed.loop_completed, 0) AS loop_completed,
+            COALESCE(expired.expired, 0) AS expired
         FROM platforms
         LEFT JOIN ingested  USING (platform)
         LEFT JOIN completed USING (platform)
+        LEFT JOIN expired   USING (platform)
         ORDER BY platform
     """
     return bq_read(sql).to_dict("records")
@@ -77,9 +106,10 @@ def _format_date(target_date: str) -> str:
 def _build_blocks(target_date: str, rows: list[dict]) -> tuple[str, list[dict]]:
     total_ing = sum(int(r["ingested"]) for r in rows)
     total_cmp = sum(int(r["loop_completed"]) for r in rows)
+    total_exp = sum(int(r["expired"]) for r in rows)
     pretty_date = _format_date(target_date)
 
-    if total_ing == 0 and total_cmp == 0:
+    if total_ing == 0 and total_cmp == 0 and total_exp == 0:
         text = (
             f":warning: No throughput logged for {pretty_date} (IST) — "
             "verify pipeline if unexpected."
@@ -88,16 +118,21 @@ def _build_blocks(target_date: str, rows: list[dict]) -> tuple[str, list[dict]]:
 
     header = f":bar_chart: *Daily throughput — {pretty_date} (IST)*"
 
-    def _line(label: str, ing: int, cmp_: int) -> str:
-        return f"*{label}*  ·  ingested: `{ing}`  ·  completed: `{cmp_}`"
+    def _line(label: str, ing: int, cmp_: int, exp: int) -> str:
+        return (
+            f"*{label}*  ·  ingested: `{ing}`  ·  completed: `{cmp_}`"
+            f"  ·  expired: `{exp}`"
+        )
 
-    body_lines = [_line("Total", total_ing, total_cmp)]
+    body_lines = [_line("Total", total_ing, total_cmp, total_exp)]
     for r in rows:
-        body_lines.append(_line(r["platform"], int(r["ingested"]), int(r["loop_completed"])))
+        body_lines.append(
+            _line(r["platform"], int(r["ingested"]), int(r["loop_completed"]), int(r["expired"]))
+        )
 
     text_fallback = (
         f"Daily throughput {pretty_date}: ingested {total_ing}, "
-        f"completed {total_cmp}"
+        f"completed {total_cmp}, expired {total_exp}"
     )
     blocks = [
         {"type": "section", "text": {"type": "mrkdwn", "text": header}},
