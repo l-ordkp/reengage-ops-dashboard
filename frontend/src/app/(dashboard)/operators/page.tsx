@@ -686,10 +686,25 @@ function DailyLoopChart({
         {data.map((d, i) => {
           const cx = padL + slot * i + slot / 2;
           const cy = padT + (innerH - (ingestedSeries[i] / max) * innerH);
+          // Label above the point by default; drop it below when it would
+          // collide with the completed-bar label or the chart's top edge.
+          const barTopY = padT + innerH - (d.loop_completed / max) * innerH;
+          let labelY = cy - 7;
+          if (labelY < padT + 8 || Math.abs(labelY - (barTopY - 4)) < 10) {
+            labelY = cy + 14;
+          }
           return (
-            <circle key={`ing-${d.date}`} cx={cx} cy={cy} r={3} fill="#38bdf8">
-              <title>{`${d.date}: ${ingestedSeries[i].toLocaleString()} ingested`}</title>
-            </circle>
+            <g key={`ing-${d.date}`}>
+              <circle cx={cx} cy={cy} r={3} fill="#38bdf8">
+                <title>{`${d.date}: ${ingestedSeries[i].toLocaleString()} ingested`}</title>
+              </circle>
+              <text
+                x={cx} y={labelY}
+                textAnchor="middle" fontSize="10" fill="#38bdf8"
+              >
+                {ingestedSeries[i].toLocaleString()}
+              </text>
+            </g>
           );
         })}
       </svg>
