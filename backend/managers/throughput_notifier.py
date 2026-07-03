@@ -68,10 +68,14 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
             SELECT a.platform, COUNT(DISTINCT a.review_uid) AS expired
             FROM `{TABLE_ASSIGNMENTS}` a
             JOIN (
-                -- Dedup to the latest row per review (dbt MERGE leaves
-                -- multiple rows per key); without this, stale rows with
-                -- older review_timestamps yield different deadline days and
-                -- the same review gets counted on more than one day.
+                -- Dedup to one row per review (dbt MERGE leaves multiple
+                -- rows per key); without this the same review could join
+                -- more than once. DESC matches the convention elsewhere;
+                -- duplicates share identical review_timestamps (verified
+                -- over 30d: 35k dup keys, 0 disagreements), so the order
+                -- direction doesn't affect which deadline day is computed
+                -- and expire_stale_assignments' EXISTS-any-row flip lands
+                -- on the same day.
                 SELECT order_id, review_timestamp, order_timestamp
                 FROM `{TABLE_AUTOMATION_REVIEWS}`
                 -- Prune partitions (DAY-partitioned on review_timestamp).
