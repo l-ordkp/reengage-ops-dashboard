@@ -67,17 +67,28 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
             -- already flagged by post time.
             SELECT a.platform, COUNT(DISTINCT a.review_uid) AS expired
             FROM `{TABLE_ASSIGNMENTS}` a
-            JOIN `{TABLE_AUTOMATION_REVIEWS}` ar ON ar.order_id = a.order_id
+            JOIN (
+                -- Dedup to the latest row per review (dbt MERGE leaves
+                -- multiple rows per key); without this, stale rows with
+                -- older review_timestamps yield different deadline days and
+                -- the same review gets counted on more than one day.
+                SELECT order_id, review_timestamp, order_timestamp
+                FROM `{TABLE_AUTOMATION_REVIEWS}`
+                -- Prune partitions (DAY-partitioned on review_timestamp).
+                -- A deadline landing on target_date means the review was
+                -- posted at most 14 days earlier (UberEats window); 16 days
+                -- adds slack for the IST conversion. The IS NULL arm keeps
+                -- rows that fall back to order_timestamp.
+                WHERE (
+                    review_timestamp >= TIMESTAMP(DATE_SUB(DATE('{target_date}'), INTERVAL 16 DAY))
+                    OR review_timestamp IS NULL
+                )
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(review_id, order_id)
+                    ORDER BY COALESCE(review_timestamp, order_timestamp) DESC
+                ) = 1
+            ) ar ON ar.order_id = a.order_id
             WHERE a.status = 'expired'
-              -- Prune automation_reviews partitions (DAY-partitioned on
-              -- review_timestamp). A deadline landing on target_date means the
-              -- review was posted at most 14 days earlier (UberEats window);
-              -- 16 days adds slack for the IST conversion. The IS NULL arm
-              -- keeps rows that fall back to order_timestamp.
-              AND (
-                  ar.review_timestamp >= TIMESTAMP(DATE_SUB(DATE('{target_date}'), INTERVAL 16 DAY))
-                  OR ar.review_timestamp IS NULL
-              )
               AND DATE(
                 TIMESTAMP_ADD(
                   COALESCE(ar.review_timestamp, ar.order_timestamp),
@@ -109,7 +120,11 @@ def _build_blocks(target_date: str, rows: list[dict]) -> tuple[str, list[dict]]:
     total_exp = sum(int(r["expired"]) for r in rows)
     pretty_date = _format_date(target_date)
 
-    if total_ing == 0 and total_cmp == 0 and total_exp == 0:
+    # Deliberately ignores total_exp: expiries derive from reviews posted
+    # 7-14 days ago and need no fresh ingestion, so they're nonzero even
+    # when the pipeline is dead — gating on them would mask the outage
+    # this warning exists to catch.
+    if total_ing == 0 and total_cmp == 0:
         text = (
             f":warning: No throughput logged for {pretty_date} (IST) — "
             "verify pipeline if unexpected."
