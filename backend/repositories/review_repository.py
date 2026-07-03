@@ -485,6 +485,12 @@ def fetch_flow_activity_7d(period_days: int = 7) -> dict:
         enriched AS (
           SELECT b.*, DATE(DATETIME(b.deadline_ts,'America/Chicago')) AS deadline_date,
             (b.is_replied OR res_o.key IS NOT NULL OR res_r.key IS NOT NULL) AS replied_now,
+            -- replied_by_deadline: only a Loop completion is time-checked (completed_at <= deadline).
+            -- Platform is_replied / external auto_resolved carry NO reply timestamp, so we assume
+            -- they were timely. Effect: a review answered LATE by the merchant is NOT flagged missed
+            -- (slight undercount). Deliberate, and consistent with the weekly Slack notifier — the
+            -- alternative (dropping is_replied) would OVERcount, flagging every timely external reply
+            -- as a miss. Fully accurate "missed" needs a reply timestamp we don't have.
             (b.is_replied OR are_o.key IS NOT NULL OR are_r.key IS NOT NULL
              OR (LEAST(IFNULL(ld_o.completed_at, TIMESTAMP '9999-12-31'),
                        IFNULL(ld_r.completed_at, TIMESTAMP '9999-12-31')) <= b.deadline_ts)) AS replied_by_deadline
@@ -510,6 +516,11 @@ def fetch_flow_activity_7d(period_days: int = 7) -> dict:
           COUNTIF(deadline_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND NOT replied_by_deadline AND platform='UberEats')   AS missed_ue
         FROM enriched
     """
+    # solved = Loop completions this week, counted across ALL assignments (throughput-wide),
+    # intentionally NOT re-scoped to currently-non-paused chains like new_reviews/missed are.
+    # This matches the daily throughput_notifier and the weekly Slack notifier, and it's an
+    # independent event count (it isn't meant to reconcile with the other two). A chain paused
+    # mid-week keeps the work Loop actually did that week.
     solved_sql = f"""
         SELECT platform, COUNT(DISTINCT COALESCE(review_uid, order_id)) AS total
         FROM `{TABLE_ASSIGNMENTS}`
