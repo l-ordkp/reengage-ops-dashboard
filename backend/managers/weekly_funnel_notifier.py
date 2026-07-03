@@ -128,8 +128,13 @@ def _fetch_review_flow(start_date: str, end_date: str) -> list[dict]:
           INNER JOIN `{TABLE_SLUG_AM_MAPPING}` AS sm ON ar.slug = sm.slug
           -- Scan wide enough for BOTH legs: ingested (posted in window) AND expired
           -- (deadline in window => posted up to 14 days earlier). ±2 days tz slack.
-          WHERE (ar.review_timestamp >= TIMESTAMP(DATE_SUB(DATE '{start_date}', INTERVAL 16 DAY))
-                 AND ar.review_timestamp < TIMESTAMP(DATE_ADD(DATE '{end_date}', INTERVAL 2 DAY))
+          -- COALESCE bound = correctness/row filter (also bounds NULL-review_timestamp
+          -- rows via order_timestamp); the bare-column arm below is the partition prune
+          -- (automation_reviews is DAY-partitioned on review_timestamp; IS NULL keeps
+          -- the fallback rows). Mirrors review_repository.py:65-77.
+          WHERE COALESCE(ar.review_timestamp, ar.order_timestamp) >= TIMESTAMP(DATE_SUB(DATE '{start_date}', INTERVAL 16 DAY))
+            AND COALESCE(ar.review_timestamp, ar.order_timestamp) < TIMESTAMP(DATE_ADD(DATE '{end_date}', INTERVAL 2 DAY))
+            AND (ar.review_timestamp >= TIMESTAMP(DATE_SUB(DATE '{start_date}', INTERVAL 16 DAY))
                  OR ar.review_timestamp IS NULL)
             AND ar.platform IN ('Doordash','UberEats')
             AND {_in_scope_exists()}
@@ -183,7 +188,10 @@ def _fetch_solved(start_date: str, end_date: str) -> list[dict]:
     (excludes observed_out_of_window so late observations of old replies don't
     count)."""
     sql = f"""
-        SELECT platform, COUNT(DISTINCT review_uid) AS solved
+        -- COALESCE(review_uid, order_id): review_uid is populated for every
+        -- completed row today, but the rest of this file keys on both, so match
+        -- that here too rather than silently drop any order_id-only completion.
+        SELECT platform, COUNT(DISTINCT COALESCE(review_uid, order_id)) AS solved
         FROM `{TABLE_ASSIGNMENTS}`
         WHERE status='completed'
           AND completed_at IS NOT NULL
@@ -214,7 +222,7 @@ def _expired_sort_key(bucket: str) -> int:
 def _build_blocks(
     start_date: str, end_date: str, review_rows: list[dict], solved_rows: list[dict]
 ) -> tuple[str, list[dict]]:
-    def _trip(r: dict | None) -> tuple[int, int, int]:
+    def _counts(r: dict | None) -> tuple[int, int, int]:
         if not r:
             return 0, 0, 0
         return int(r["reviews"]), int(r["doordash"]), int(r["ubereats"])
@@ -225,7 +233,7 @@ def _build_blocks(
         key=lambda r: _expired_sort_key(r["bucket"]),
     )
 
-    ing, ing_dd, ing_ue = _trip(ing_row)
+    ing, ing_dd, ing_ue = _counts(ing_row)
     exp = sum(int(r["reviews"]) for r in expired_rows)
     exp_dd = sum(int(r["doordash"]) for r in expired_rows)
     exp_ue = sum(int(r["ubereats"]) for r in expired_rows)
@@ -261,7 +269,7 @@ def _build_blocks(
     if exp > 0:
         breakdown_lines = [":mag: *Expired — root cause* _(days from posted to first queued)_"]
         for r in expired_rows:
-            tot, dd, ue = _trip(r)
+            tot, dd, ue = _counts(r)
             label = r["bucket"].split("EXPIRED: ", 1)[-1]
             breakdown_lines.append(f"• `{label}`  ·  `{tot}`   (DD `{dd}` · UE `{ue}`)")
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(breakdown_lines)}})
