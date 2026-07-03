@@ -426,9 +426,12 @@ def fetch_flow_activity_7d(period_days: int = 7) -> dict:
       - missed:   in-scope reviews whose DEADLINE fell in the window and were not
                   replied by that deadline.
 
-    Independent populations — they do NOT sum. Mirrors the weekly Slack notifier
-    (weekly_funnel_notifier.py). Returns {period_start, period_end,
-    ingested/solved/missed: {total, doordash, ubereats}}.
+    Returns {period_start, period_end,
+      new_reviews: {total, doordash, ubereats, replied, pending, expired}  # cohort — replied+pending+expired sum to total
+      solved:      {total, doordash, ubereats}                              # Loop completions this week (independent)
+      missed:      {total, doordash, ubereats}                              # deadlines missed this week (independent)
+    }. new_reviews is a lifecycle funnel of THIS week's inflow (expired ~0 for a
+    fresh week — they haven't matured); solved/missed are independent event counts.
     """
     today_ct = datetime.now(ZoneInfo("America/Chicago")).date()
     end_date = today_ct.isoformat()
@@ -447,6 +450,12 @@ def fetch_flow_activity_7d(period_days: int = 7) -> dict:
             SELECT review_uid AS key, completed_at FROM `{TABLE_ASSIGNMENTS}` WHERE status='completed' AND completed_at IS NOT NULL
             UNION ALL SELECT order_id AS key, completed_at FROM `{TABLE_ASSIGNMENTS}` WHERE status='completed' AND completed_at IS NOT NULL AND order_id IS NOT NULL
           ) GROUP BY key
+        ),
+        resolved AS (
+          SELECT DISTINCT key FROM (
+            SELECT review_uid AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status IN ('completed','auto_resolved')
+            UNION ALL SELECT order_id AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status IN ('completed','auto_resolved') AND order_id IS NOT NULL
+          )
         ),
         base AS (
           SELECT
@@ -475,24 +484,31 @@ def fetch_flow_activity_7d(period_days: int = 7) -> dict:
         ),
         enriched AS (
           SELECT b.*, DATE(DATETIME(b.deadline_ts,'America/Chicago')) AS deadline_date,
+            (b.is_replied OR res_o.key IS NOT NULL OR res_r.key IS NOT NULL) AS replied_now,
             (b.is_replied OR are_o.key IS NOT NULL OR are_r.key IS NOT NULL
              OR (LEAST(IFNULL(ld_o.completed_at, TIMESTAMP '9999-12-31'),
                        IFNULL(ld_r.completed_at, TIMESTAMP '9999-12-31')) <= b.deadline_ts)) AS replied_by_deadline
           FROM base b
+          LEFT JOIN resolved res_o ON res_o.key=b.order_id
+          LEFT JOIN resolved res_r ON res_r.key=b.review_id
           LEFT JOIN auto_res  are_o ON are_o.key=b.order_id
           LEFT JOIN auto_res  are_r ON are_r.key=b.review_id
           LEFT JOIN loop_done ld_o  ON ld_o.key=b.order_id
           LEFT JOIN loop_done ld_r  ON ld_r.key=b.review_id
         )
-        SELECT 'ingested' AS metric,
-               COUNT(*) AS total, COUNTIF(platform='Doordash') AS doordash, COUNTIF(platform='UberEats') AS ubereats
-        FROM enriched WHERE posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}'
-        UNION ALL
-        SELECT 'missed' AS metric,
-               COUNT(*), COUNTIF(platform='Doordash'), COUNTIF(platform='UberEats')
+        SELECT
+          -- New-reviews cohort: posted in the window, split by CURRENT status (sums to nr_total)
+          COUNTIF(posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}')                          AS nr_total,
+          COUNTIF(posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND platform='Doordash')  AS nr_dd,
+          COUNTIF(posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND platform='UberEats')   AS nr_ue,
+          COUNTIF(posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND replied_now)           AS nr_replied,
+          COUNTIF(posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND NOT replied_now AND deadline_ts >  CURRENT_TIMESTAMP()) AS nr_pending,
+          COUNTIF(posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND NOT replied_now AND deadline_ts <= CURRENT_TIMESTAMP()) AS nr_expired,
+          -- Deadlines missed this week (by deadline date; independent of the cohort above)
+          COUNTIF(deadline_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND NOT replied_by_deadline)                          AS missed_total,
+          COUNTIF(deadline_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND NOT replied_by_deadline AND platform='Doordash')  AS missed_dd,
+          COUNTIF(deadline_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND NOT replied_by_deadline AND platform='UberEats')   AS missed_ue
         FROM enriched
-        WHERE deadline_date BETWEEN DATE '{start_date}' AND DATE '{end_date}'
-          AND NOT replied_by_deadline
     """
     solved_sql = f"""
         SELECT platform, COUNT(DISTINCT COALESCE(review_uid, order_id)) AS total
@@ -502,18 +518,25 @@ def fetch_flow_activity_7d(period_days: int = 7) -> dict:
           AND NOT IFNULL(observed_out_of_window, FALSE)
         GROUP BY platform
     """
-    rev = bq_read(review_sql)
+    rev = bq_read(review_sql).to_dict("records")[0]
     sol = bq_read(solved_sql)
 
-    out = {m: {"total": 0, "doordash": 0, "ubereats": 0} for m in ("ingested", "solved", "missed")}
-    for r in rev.to_dict("records"):
-        out[r["metric"]] = {
-            "total": int(r["total"]), "doordash": int(r["doordash"]), "ubereats": int(r["ubereats"]),
-        }
+    # New-reviews cohort — replied + pending + expired sum to total.
+    new_reviews = {
+        "total": int(rev["nr_total"]), "doordash": int(rev["nr_dd"]), "ubereats": int(rev["nr_ue"]),
+        "replied": int(rev["nr_replied"]), "pending": int(rev["nr_pending"]), "expired": int(rev["nr_expired"]),
+    }
+    missed = {
+        "total": int(rev["missed_total"]), "doordash": int(rev["missed_dd"]), "ubereats": int(rev["missed_ue"]),
+    }
+    solved = {"total": 0, "doordash": 0, "ubereats": 0}
     for r in sol.to_dict("records"):
         plat = "doordash" if r["platform"] == "Doordash" else "ubereats" if r["platform"] == "UberEats" else None
         if plat:
-            out["solved"][plat] = int(r["total"])
-    out["solved"]["total"] = out["solved"]["doordash"] + out["solved"]["ubereats"]
+            solved[plat] = int(r["total"])
+    solved["total"] = solved["doordash"] + solved["ubereats"]
 
-    return {"period_start": start_date, "period_end": end_date, **out}
+    return {
+        "period_start": start_date, "period_end": end_date,
+        "new_reviews": new_reviews, "solved": solved, "missed": missed,
+    }
