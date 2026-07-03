@@ -137,9 +137,26 @@ export interface ChainHealthSummary {
   urgent: number;
 }
 
+// ── Flow (period activity) ───────────────────────────────────────────────────
+// Independent event counts over the last N days, each by its own event date.
+// They do NOT sum, and are NOT reconciled with the stock partition above.
+export interface FlowMetric {
+  total: number;
+  doordash: number;
+  ubereats: number;
+}
+export interface ChainHealthFlow {
+  period_start: string;   // ISO date (America/Chicago)
+  period_end: string;
+  ingested: FlowMetric;   // posted in the window
+  solved: FlowMetric;     // Loop-completed in the window (by completed_at)
+  missed: FlowMetric;     // deadline fell in the window, not replied by deadline
+}
+
 export interface ChainHealthResponse {
   summary: ChainHealthSummary;
   chains: ChainHealth[];
+  flow?: ChainHealthFlow;
 }
 
 // ── Chain Value ─────────────────────────────────────────────────────────────

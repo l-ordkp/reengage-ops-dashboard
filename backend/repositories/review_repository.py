@@ -4,6 +4,9 @@ This is the dashboard's heaviest query.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 
 from backend.clients.bq_client import bq_read
@@ -409,3 +412,108 @@ def fetch_chain_value(
     )
     ORDER BY is_rollup DESC, platform
     """)
+
+
+@cached(ttl=300)
+def fetch_flow_activity_7d(period_days: int = 7) -> dict:
+    """Period-ACTIVITY (flow) view: events that happened in the last `period_days`,
+    each counted on its own event date (America/Chicago), independent of when the
+    review was posted. Companion to the stock view in get_chain_health().
+
+      - ingested: in-scope reviews POSTED in the window.
+      - solved:   Loop completions with completed_at in the window (reliable signal,
+                  same as the daily throughput alert; external replies excluded).
+      - missed:   in-scope reviews whose DEADLINE fell in the window and were not
+                  replied by that deadline.
+
+    Independent populations — they do NOT sum. Mirrors the weekly Slack notifier
+    (weekly_funnel_notifier.py). Returns {period_start, period_end,
+    ingested/solved/missed: {total, doordash, ubereats}}.
+    """
+    today_ct = datetime.now(ZoneInfo("America/Chicago")).date()
+    end_date = today_ct.isoformat()
+    start_date = (today_ct - timedelta(days=period_days - 1)).isoformat()
+
+    review_sql = f"""
+        WITH
+        auto_res AS (
+          SELECT DISTINCT key FROM (
+            SELECT review_uid AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status='auto_resolved'
+            UNION ALL SELECT order_id AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status='auto_resolved' AND order_id IS NOT NULL
+          )
+        ),
+        loop_done AS (
+          SELECT key, MIN(completed_at) AS completed_at FROM (
+            SELECT review_uid AS key, completed_at FROM `{TABLE_ASSIGNMENTS}` WHERE status='completed' AND completed_at IS NOT NULL
+            UNION ALL SELECT order_id AS key, completed_at FROM `{TABLE_ASSIGNMENTS}` WHERE status='completed' AND completed_at IS NOT NULL AND order_id IS NOT NULL
+          ) GROUP BY key
+        ),
+        base AS (
+          SELECT
+            COALESCE(ar.review_id, ar.order_id) AS review_uid, ar.order_id, ar.review_id, ar.platform, ar.is_replied,
+            DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp),'America/Chicago')) AS posted_date,
+            CASE WHEN ar.platform='Doordash' THEN TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 7  DAY)
+                 WHEN ar.platform='UberEats' THEN TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 14 DAY)
+                 ELSE TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 7 DAY) END AS deadline_ts
+          FROM `{TABLE_AUTOMATION_REVIEWS}` AS ar
+          INNER JOIN `{TABLE_SLUG_AM_MAPPING}` AS sm ON ar.slug = sm.slug
+          -- Cover both legs: ingested (posted in window) and missed (deadline in
+          -- window => posted up to 14 days earlier). ~22-day COALESCE bound +
+          -- bare-column partition prune (see review_repository.py:65-77).
+          WHERE COALESCE(ar.review_timestamp, ar.order_timestamp) >= TIMESTAMP(DATE_SUB(DATE '{start_date}', INTERVAL 15 DAY))
+            AND (ar.review_timestamp >= TIMESTAMP(DATE_SUB(DATE '{start_date}', INTERVAL 16 DAY)) OR ar.review_timestamp IS NULL)
+            AND ar.platform IN ('Doordash','UberEats')
+            AND EXISTS (
+              SELECT 1 FROM `{TABLE_REVIEW_RESPONSE_CFG}` rc
+              WHERE rc.paused=FALSE AND sm.chain=rc.chain_name
+                AND (ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(rc.vb_platforms),[]))=0      OR ar.platform IN UNNEST(JSON_VALUE_ARRAY(rc.vb_platforms)))
+                AND (ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(rc.ratings),[]))=0           OR CAST(ar.star_rating AS STRING) IN UNNEST(JSON_VALUE_ARRAY(rc.ratings)) OR ar.rating_value IN UNNEST(JSON_VALUE_ARRAY(rc.ratings)))
+                AND (ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(rc.customer_types),[]))=0    OR (CASE WHEN SAFE_CAST(ar.orders_count AS INT64)>1 THEN 'existing' ELSE 'new' END) IN UNNEST(JSON_VALUE_ARRAY(rc.customer_types)))
+                AND (ARRAY_LENGTH(IFNULL(JSON_VALUE_ARRAY(rc.feedback_presence),[]))=0 OR (CASE WHEN COALESCE(TRIM(ar.review_text),'')='' THEN 'without_feedback' ELSE 'with_feedback' END) IN UNNEST(JSON_VALUE_ARRAY(rc.feedback_presence)))
+            )
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(ar.review_id, ar.order_id) ORDER BY COALESCE(ar.review_timestamp, ar.order_timestamp) DESC) = 1
+        ),
+        enriched AS (
+          SELECT b.*, DATE(DATETIME(b.deadline_ts,'America/Chicago')) AS deadline_date,
+            (b.is_replied OR are_o.key IS NOT NULL OR are_r.key IS NOT NULL
+             OR (LEAST(IFNULL(ld_o.completed_at, TIMESTAMP '9999-12-31'),
+                       IFNULL(ld_r.completed_at, TIMESTAMP '9999-12-31')) <= b.deadline_ts)) AS replied_by_deadline
+          FROM base b
+          LEFT JOIN auto_res  are_o ON are_o.key=b.order_id
+          LEFT JOIN auto_res  are_r ON are_r.key=b.review_id
+          LEFT JOIN loop_done ld_o  ON ld_o.key=b.order_id
+          LEFT JOIN loop_done ld_r  ON ld_r.key=b.review_id
+        )
+        SELECT 'ingested' AS metric,
+               COUNT(*) AS total, COUNTIF(platform='Doordash') AS doordash, COUNTIF(platform='UberEats') AS ubereats
+        FROM enriched WHERE posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}'
+        UNION ALL
+        SELECT 'missed' AS metric,
+               COUNT(*), COUNTIF(platform='Doordash'), COUNTIF(platform='UberEats')
+        FROM enriched
+        WHERE deadline_date BETWEEN DATE '{start_date}' AND DATE '{end_date}'
+          AND NOT replied_by_deadline
+    """
+    solved_sql = f"""
+        SELECT platform, COUNT(DISTINCT COALESCE(review_uid, order_id)) AS total
+        FROM `{TABLE_ASSIGNMENTS}`
+        WHERE status='completed' AND completed_at IS NOT NULL
+          AND DATE(DATETIME(completed_at,'America/Chicago')) BETWEEN DATE '{start_date}' AND DATE '{end_date}'
+          AND NOT IFNULL(observed_out_of_window, FALSE)
+        GROUP BY platform
+    """
+    rev = bq_read(review_sql)
+    sol = bq_read(solved_sql)
+
+    out = {m: {"total": 0, "doordash": 0, "ubereats": 0} for m in ("ingested", "solved", "missed")}
+    for r in rev.to_dict("records"):
+        out[r["metric"]] = {
+            "total": int(r["total"]), "doordash": int(r["doordash"]), "ubereats": int(r["ubereats"]),
+        }
+    for r in sol.to_dict("records"):
+        plat = "doordash" if r["platform"] == "Doordash" else "ubereats" if r["platform"] == "UberEats" else None
+        if plat:
+            out["solved"][plat] = int(r["total"])
+    out["solved"]["total"] = out["solved"]["doordash"] + out["solved"]["ubereats"]
+
+    return {"period_start": start_date, "period_end": end_date, **out}

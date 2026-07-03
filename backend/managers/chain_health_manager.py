@@ -16,16 +16,20 @@ import pandas as pd
 
 from backend.repositories.review_repository import (
     fetch_chain_totals_14d,
+    fetch_flow_activity_7d,
     fetch_reviews_14d,
 )
 from backend.utils.serializers import df_to_dicts
 
 
 def get_chain_health() -> dict:
-    """Return {summary, chains}. Only ReEngage-managed chains (= at least
-    one non-paused review_response_config row) appear."""
+    """Return {summary, chains, flow}. Only ReEngage-managed chains (= at least
+    one non-paused review_response_config row) appear. `flow` is the independent
+    7-day activity view (ingested/solved/missed by event date) — additive and
+    NOT reconciled with the stock partition; see fetch_flow_activity_7d."""
     totals = fetch_chain_totals_14d()
     in_scope = fetch_reviews_14d()
+    flow = fetch_flow_activity_7d()
 
     if not in_scope.empty:
         # fetch_reviews_14d's LEFT JOINs (to review_responses + assignments)
@@ -66,7 +70,7 @@ def get_chain_health() -> dict:
         ])
 
     if totals.empty:
-        return {"summary": _empty_summary(), "chains": []}
+        return {"summary": _empty_summary(), "chains": [], "flow": flow}
 
     chains = totals.merge(in_scope_rollup, on="chain_name", how="left")
 
@@ -114,7 +118,7 @@ def get_chain_health() -> dict:
         "urgent":         int(chains["urgent"].sum()),
     }
 
-    return {"summary": summary, "chains": df_to_dicts(chains)}
+    return {"summary": summary, "chains": df_to_dicts(chains), "flow": flow}
 
 
 def _empty_summary() -> dict:
