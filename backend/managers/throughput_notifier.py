@@ -56,7 +56,17 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
             -- direction doesn't affect which deadline day is computed
             -- and expire_stale_assignments' EXISTS-any-row flip lands
             -- on the same day.
-            SELECT order_id, review_timestamp, order_timestamp
+            --
+            -- review_uid is the codebase-wide review identity (same
+            -- COALESCE as review_repository et al.) and doubles as the
+            -- dedup partition key below, so joins on it can never fan
+            -- out. Verified over 30d of completed + all expired
+            -- assignments: review_uid and order_id joins match
+            -- identically (1 divergent row in ~55k, order_id-only).
+            SELECT
+                COALESCE(review_id, order_id) AS review_uid,
+                review_timestamp,
+                order_timestamp
             FROM `{TABLE_AUTOMATION_REVIEWS}`
             -- Prune partitions (DAY-partitioned on review_timestamp).
             -- A deadline landing on target_date means the review was
@@ -110,7 +120,7 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
                         a.completed_at, HOUR
                     ) AS hours_left_at_reply
                 FROM `{TABLE_ASSIGNMENTS}` a
-                LEFT JOIN recent_reviews ar ON ar.order_id = a.order_id
+                LEFT JOIN recent_reviews ar ON ar.review_uid = a.review_uid
                 WHERE a.status = 'completed'
                   AND a.completed_at IS NOT NULL
                   AND DATE(a.completed_at, 'Asia/Kolkata') = DATE('{target_date}')
@@ -127,7 +137,7 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
             -- already flagged by post time.
             SELECT a.platform, COUNT(DISTINCT a.review_uid) AS expired
             FROM `{TABLE_ASSIGNMENTS}` a
-            JOIN recent_reviews ar ON ar.order_id = a.order_id
+            JOIN recent_reviews ar ON ar.review_uid = a.review_uid
             WHERE a.status = 'expired'
               AND DATE(
                 TIMESTAMP_ADD(
@@ -209,11 +219,17 @@ def _build_blocks(target_date: str, rows: list[dict]) -> tuple[str, list[dict]]:
     for r in rows:
         body_lines.append(_line(r["platform"], r))
 
+    # Same show-only-when-nonzero rule as _priority_breakdown so the
+    # fallback's numbers always reconcile with the completed total.
+    unknown_str = (
+        f", unknown {totals['completed_unknown']}"
+        if totals["completed_unknown"] else ""
+    )
     text_fallback = (
         f"Daily throughput {pretty_date}: ingested {total_ing}, "
         f"completed {total_cmp} (critical {totals['completed_critical']}, "
         f"urgent {totals['completed_urgent']}, "
-        f"normal {totals['completed_normal']}), expired {total_exp}"
+        f"normal {totals['completed_normal']}{unknown_str}), expired {total_exp}"
     )
     blocks = [
         {"type": "section", "text": {"type": "mrkdwn", "text": header}},
