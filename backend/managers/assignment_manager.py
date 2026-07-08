@@ -34,12 +34,15 @@ from backend.repositories.review_repository import fetch_reviews_14d
 from backend.repositories.user_repository import fetch_approved_operators
 
 SOFT_CAP_MULTIPLIER = 1.20
-# hot = review inside the critical/urgent window (matches the priority CASE
-# in review_repository: CRITICAL <= 24h, URGENT <= 48h)
-HOT_HOURS_THRESHOLD = 48
+# hot = critical/urgent priority as computed by fetch_reviews_14d (<= 48h to
+# platform deadline) — read from the priority column, not re-derived here, so
+# the definition can't drift from review_repository's CASE.
+HOT_PRIORITIES = frozenset({"CRITICAL", "URGENT"})
 # On quiet days a proportional hot cap rounds down to ~0 and would force
 # pointless group splits over a handful of hot reviews; below this many the
 # imbalance is meaningless, so every operator can hold at least this many.
+# Deliberately NOT weight-scaled: it is a de-minimis threshold, and a reduced
+# operator's smaller soft_cap still loses capacity tie-breaks on quiet days.
 HOT_CAP_FLOOR = 5
 
 
@@ -68,7 +71,7 @@ def run_assignment(full_reassign: bool = True) -> dict:
             return {"info": "All pending reviews already assigned", "assigned": 0}
 
     pending = pending.sort_values("hours_left", ascending=True)
-    total_hot = int((pending["hours_left"] <= HOT_HOURS_THRESHOLD).sum())
+    total_hot = int(pending["priority"].isin(HOT_PRIORITIES).sum())
     ops = _build_operator_state(operators, len(pending), total_hot)
     group_plan, groups = _build_group_plan(pending, ops)
     assignments = _materialize_assignments(ops, group_plan, groups)
@@ -122,7 +125,7 @@ def _build_group_plan(pending, ops: list[dict]) -> tuple[dict, dict]:
         for (chain, plat), grp in pending.groupby(["chain_name", "platform"])
     }
     group_hot = {
-        g: sum(1 for r in rows if r["hours_left"] <= HOT_HOURS_THRESHOLD)
+        g: sum(1 for r in rows if r["priority"] in HOT_PRIORITIES)
         for g, rows in groups.items()
     }
     chain_bundles = defaultdict(list)
@@ -206,7 +209,13 @@ def _split_group_across_ops(ops, g, g_size: int, g_hot: int, group_plan) -> None
             )
             take = max(ops[best_idx]["soft_cap"] - ops[best_idx]["assigned_count"], 1)
         take = min(remaining, take)
-        hot_take = min(round(take * hot_ratio), hot_remaining)
+        # Half-up rounding, not round() — banker's rounding on .5 fractions
+        # would under-count a shard's hot share, leaving hot rows to leak into
+        # the fallback path and breach a cap a correct count would respect.
+        # Cap-safe: feasible() guarantees take * hot_ratio <= room_hot.
+        # (feasible() truncates, deliberately: under-promise capacity when
+        # sizing a shard, over-count consumption when booking it.)
+        hot_take = min(int(take * hot_ratio + 0.5), hot_remaining)
         if take == remaining:
             hot_take = hot_remaining
 
