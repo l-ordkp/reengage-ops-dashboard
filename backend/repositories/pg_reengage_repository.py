@@ -1,10 +1,11 @@
 """Dual-write of extension writes to Postgres (loop_core) during the BQ->PG
 migration.
 
-Every function here is BEST-EFFORT: it opens its own session, swallows and logs
-any error, and never raises — so a Postgres failure can never break the
-authoritative BigQuery write path. Gated by config.DUAL_WRITE_PG (off by
-default).
+Every function here is BEST-EFFORT: it runs through `_safe`, which opens the
+session INSIDE the try, swallows and logs any error (including session/engine
+construction, rollback, and close), and never raises — so a Postgres failure
+can never break the authoritative BigQuery write path. Gated by
+config.DUAL_WRITE_PG (off by default).
 
 Targets the tables from loop_core migration 4a4ee4129539 (reengage_assignments,
 reengage_ops_log). `canonical_review_key` is a generated column
@@ -17,17 +18,51 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Callable
 
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from backend.clients.pg_client import get_pg_session
 
 logger = logging.getLogger(__name__)
 
 
+def _safe(op_name: str, work: Callable[[Session], None]) -> None:
+    """Run `work(session)` and commit, guaranteeing nothing escapes.
+
+    The session is created INSIDE the try, so engine/config construction errors
+    are caught too; rollback() and close() are individually guarded so a broken
+    connection can't re-raise past us. This is what makes the dual-write
+    genuinely best-effort — the caller (mark_responded / run_assignment) never
+    sees an exception, even though the authoritative BigQuery write already ran.
+    """
+    session = None
+    try:
+        session = get_pg_session()
+        work(session)
+        session.commit()
+    except Exception as e:
+        if session is not None:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+        logger.warning("%s failed: %s", op_name, e)
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+
 def _canonical(review_uid: str | None, order_id: str | None) -> str | None:
-    """Mirror the DB's canonical_review_key: review_uid, else order_id."""
-    return (review_uid or "").strip() or (order_id or "").strip() or None
+    """Mirror the DB's canonical_review_key EXACTLY:
+    COALESCE(NULLIF(review_uid, ''), NULLIF(order_id, '')). No trim — a
+    whitespace-only value is non-empty to NULLIF, so we must not strip it or
+    the Python key would disagree with the generated column."""
+    return (review_uid or None) or (order_id or None)
 
 
 def dual_write_mark_completed(
@@ -47,8 +82,8 @@ def dual_write_mark_completed(
     if not ck:
         return
     now = datetime.now(timezone.utc)
-    session = get_pg_session()
-    try:
+
+    def work(session: Session) -> None:
         # 1) Flip an existing pending row (== update_assignment_by_order_id).
         flipped = session.execute(
             text("""
@@ -99,12 +134,8 @@ def dual_write_mark_completed(
                  "chain_name": chain_name or "", "platform": platform, "now": now,
                  "reply_id": platform_reply_id, "coupon_id": platform_coupon_id},
             )
-        session.commit()
-    except Exception as e:  # best-effort: never break the BQ path
-        session.rollback()
-        logger.warning("dual_write_mark_completed failed for ck=%s: %s", ck, e)
-    finally:
-        session.close()
+
+    _safe("dual_write_mark_completed", work)
 
 
 def dual_write_ops_log(
@@ -113,8 +144,8 @@ def dual_write_ops_log(
 ) -> None:
     """Append one audit row to reengage_ops_log (best-effort)."""
     now = datetime.now(timezone.utc)
-    session = get_pg_session()
-    try:
+
+    def work(session: Session) -> None:
         session.execute(
             text("""
                 INSERT INTO reengage_ops_log
@@ -124,16 +155,11 @@ def dual_write_ops_log(
                 VALUES
                     (:entry_id, :review_uid, :platform, :chain_name, :action,
                      :operator_email, :performed_by, :remarks, :now, :now, :now)
-                ON CONFLICT (entry_id) DO NOTHING
             """),
             {"entry_id": str(uuid.uuid4()), "review_uid": review_uid or "",
              "platform": platform or "", "chain_name": chain_name or "",
              "action": action, "operator_email": operator_email or "",
              "performed_by": performed_by or "", "remarks": remarks or "", "now": now},
         )
-        session.commit()
-    except Exception as e:
-        session.rollback()
-        logger.warning("dual_write_ops_log failed (action=%s): %s", action, e)
-    finally:
-        session.close()
+
+    _safe("dual_write_ops_log", work)
