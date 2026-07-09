@@ -2,7 +2,7 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzfDoxp8cwKsOXFnYFRrXY85fyhtxvzino8M5+PoWTHm72u7RjdeACfgflr5j0nkYwj980EE5sCRsEZ0MBNlTldLUHhEBJma3zGaTzWMKQ/vmZ9w3QQGX+mk64uYWbHOvKZ9Qia0HLMAXfXYbC4L26J4ekloRWd7YrLP2MWzE8e6wwoJTI7UEWMI1gfSMMra7jssLclgdBwx8KVHVbFDZug9QiwxYPXnHd76V98LBFfiwxqwWHLep3iIOua+LqRb4Ad1Gx3uVm2ZHytkElbbMxSt4QbK5N9IGtwAI/N8S3b8LXGikcTxdWD6859WdC0yiNrBlf/IEwlQSGJNonXD/2QIDAQAB",
   "manifest_version": 3,
   "name": "ReEngage Response Copier",
-  "version": "2.2.2",
+  "version": "2.2.5",
   "description": "Fetches AI-generated review responses from ReEngage and copies them to clipboard on DoorDash and UberEats merchant portals.",
   "permissions": [
     "webRequest",

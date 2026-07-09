@@ -5,8 +5,34 @@
  * Proxies API calls to the ReEngage Cloud Run backend.
  */
 
+// Build tag — printed on service-worker startup so you can confirm which code
+// is actually running (chrome://extensions → "service worker" → Console).
+const BG_BUILD = "throttle-v2 (2.2.5)";
+console.log(`[ReEngage BG] build: ${BG_BUILD}`);
+
 // Default API base — can be overridden in popup for local/ngrok testing
 const DEFAULT_API_BASE = "https://reengage-ops-dashboard-v2-ul5ne76yva-uc.a.run.app";
+
+// ── assignment-table write throttle ───────────────────────────────────────
+// BigQuery serializes DML on the assignments table, so firing several writes
+// in parallel collides ("Could not serialize access … concurrent update"),
+// retries, and blows the nginx /api/extension/ timeout (proxy_read_timeout =
+// 30s) — surfacing as 504s and dropped writes. BOTH mark-responded AND
+// observed-responded write to that table, so we push them through ONE shared
+// queue: strictly one write at a time, with a small gap, so they never collide
+// with each other. This paces only the extension's background reporting; the
+// operator keeps replying on the platform at full speed.
+let _writeChain = Promise.resolve();
+const WRITE_GAP_MS = 150;
+
+function enqueueWrite(task) {
+  // task: () => Promise<any>. Runs after all previously-queued writes finish,
+  // then a short gap. Returns a promise resolving to task()'s result. A failed
+  // task never breaks the chain (the next write still runs).
+  const run = _writeChain.then(task);
+  _writeChain = run.catch(() => {}).then(() => new Promise((r) => setTimeout(r, WRITE_GAP_MS)));
+  return run;
+}
 
 // The observed-responded dedup ledger lives in chrome.storage.local (keyed
 // "observed_seen") so content scripts can read/write it without the access-
@@ -362,7 +388,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true, data: { processed: 0 } });
       return true;
     }
-    Promise.all([getApiBase(), getOperatorEmail()]).then(([apiBase, email]) => {
+    enqueueWrite(() => Promise.all([getApiBase(), getOperatorEmail()]).then(([apiBase, email]) =>
       fetch(`${apiBase}/api/extension/observed-responded`, {
         method: "POST",
         headers: {
@@ -374,22 +400,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })
         .then(resp => resp.json().then(data => ({ ok: resp.ok, status: resp.status, data })))
         .then(({ ok, status, data }) => {
-          if (!ok) {
-            sendResponse({ success: false, error: data.detail || `HTTP ${status}` });
-          } else {
-            console.log(`[ReEngage BG] observed-responded: ${JSON.stringify(data)}`);
-            sendResponse({ success: true, data });
-          }
+          if (!ok) throw new Error(data.detail || `HTTP ${status}`);
+          console.log(`[ReEngage BG] observed-responded: ${JSON.stringify(data)}`);
+          return data;
         })
-        .catch(err => sendResponse({ success: false, error: err.message }));
-    });
+    ))
+      .then(data => sendResponse({ success: true, data }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
 
-  // Mark responded on Cloud Run
+  // Mark responded on Cloud Run — THROTTLED via enqueueWrite(): shares the one
+  // assignment-table write queue with observed-responded, so writes go
+  // one-at-a-time and never collide on BigQuery's serialized DML. Only paces
+  // background reporting; the operator is unaffected.
   if (message.type === "MARK_RESPONDED") {
     const { orderId, platform, chainName, qc } = message;
-    Promise.all([getApiBase(), getOperatorEmail()]).then(([apiBase, email]) => {
+    enqueueWrite(() => Promise.all([getApiBase(), getOperatorEmail()]).then(([apiBase, email]) => {
       const body = {
         order_id: orderId,
         platform: platform,
@@ -405,7 +432,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         body.platform_coupon_id = qc.platform_coupon_id || "";
       }
       console.log(`[ReEngage BG] MARK_RESPONDED with QC:`, qc ? `match_resp=${qc.exact_match_response}, match_disc=${qc.exact_match_discount}` : "no QC data");
-      fetch(`${apiBase}/api/extension/mark-responded`, {
+      return fetch(`${apiBase}/api/extension/mark-responded`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -413,11 +440,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           "ngrok-skip-browser-warning": "true"
         },
         body: JSON.stringify(body)
-      })
-        .then(resp => resp.json())
-        .then(data => sendResponse({ success: true, data }))
-        .catch(err => sendResponse({ success: false, error: err.message }));
-    });
+      }).then(resp => resp.json());
+    }))
+      .then(data => sendResponse({ success: true, data }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
 });
