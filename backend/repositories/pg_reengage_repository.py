@@ -163,3 +163,92 @@ def dual_write_ops_log(
         )
 
     _safe("dual_write_ops_log", work)
+
+
+def dual_write_ops_log_bulk(entries: list[dict]) -> None:
+    """Bulk variant of dual_write_ops_log for the observed-responded batch.
+    Each entry: review_uid, platform, chain_name, action, operator_email,
+    performed_by, remarks."""
+    if not entries:
+        return
+    now = datetime.now(timezone.utc)
+
+    def work(session: Session) -> None:
+        session.execute(
+            text("""
+                INSERT INTO reengage_ops_log
+                    (entry_id, review_uid, platform, chain_name, action,
+                     operator_email, performed_by, remarks, processing_timestamp,
+                     created_at, updated_at)
+                VALUES
+                    (:entry_id, :review_uid, :platform, :chain_name, :action,
+                     :operator_email, :performed_by, :remarks, :now, :now, :now)
+            """),
+            [{"entry_id": str(uuid.uuid4()), "review_uid": e.get("review_uid") or "",
+              "platform": e.get("platform") or "", "chain_name": e.get("chain_name") or "",
+              "action": e.get("action") or "", "operator_email": e.get("operator_email") or "",
+              "performed_by": e.get("performed_by") or "", "remarks": e.get("remarks") or "",
+              "now": now} for e in entries],
+        )
+
+    _safe("dual_write_ops_log_bulk", work)
+
+
+def dual_write_observed(items: list[dict]) -> None:
+    """Mirror observed_responded's assignment writes into Postgres.
+
+    Each item: review_uid, order_id, platform, status ('completed' for
+    missed_but_ours, 'auto_resolved' for external), operator_email (matched Loop
+    username, or '' for external), observed_out_of_window.
+
+    Per item: flip a pending PG row to the target terminal status (mirrors
+    bulk_flip_pending_to — resets operator_email and the OOW flag, stamps
+    completed_at); if there's no pending row, insert a terminal row. The INSERT
+    uses ON CONFLICT DO NOTHING (NOT DO UPDATE) because an observation must
+    never overwrite an existing terminal row — a real submit's completed row
+    stays intact — matching the manager's "already-terminal rows are skipped".
+    """
+    if not items:
+        return
+    now = datetime.now(timezone.utc)
+
+    def work(session: Session) -> None:
+        for it in items:
+            ck = _canonical(it.get("review_uid"), it.get("order_id"))
+            if not ck:
+                continue
+            status = it["status"]
+            op = it.get("operator_email") or ""
+            oow = bool(it.get("observed_out_of_window"))
+            flipped = session.execute(
+                text("""
+                    UPDATE reengage_assignments
+                    SET status = :status, operator_email = :op,
+                        observed_out_of_window = :oow,
+                        completed_at = :now, updated_at = :now
+                    WHERE canonical_review_key = :ck AND status = 'pending'
+                """),
+                {"status": status, "op": op, "oow": oow, "now": now, "ck": ck},
+            ).rowcount
+            if flipped == 0:
+                session.execute(
+                    text("""
+                        INSERT INTO reengage_assignments
+                            (assignment_id, review_uid, order_id, operator_email, chain_name,
+                             platform, status, assigned_at, completed_at,
+                             observed_out_of_window, created_at, updated_at)
+                        VALUES
+                            (:aid, :review_uid, :order_id, :op, '', :platform,
+                             :status, :now, :now, :oow, :now, :now)
+                        ON CONFLICT (canonical_review_key)
+                            WHERE status IN ('completed', 'auto_resolved')
+                                  AND canonical_review_key IS NOT NULL
+                        DO NOTHING
+                    """),
+                    {"aid": str(uuid.uuid4()), "review_uid": it.get("review_uid") or "",
+                     "order_id": it.get("order_id"), "op": op,
+                     "platform": it.get("platform") or "", "status": status,
+                     "oow": oow, "now": now},
+                )
+
+    _safe("dual_write_observed", work)

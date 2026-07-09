@@ -32,7 +32,9 @@ from backend.repositories.extension_repository import (
 from backend.repositories.ops_log_repository import log_action, log_actions_bulk
 from backend.repositories.pg_reengage_repository import (
     dual_write_mark_completed,
+    dual_write_observed,
     dual_write_ops_log,
+    dual_write_ops_log_bulk,
 )
 from backend.repositories.operator_repository import (
     fetch_daily_loop_completed_14d,
@@ -432,6 +434,29 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
         })
     if log_entries:
         log_actions_bulk(log_entries)
+
+    # Dual-write to Postgres (loop_core) during the BQ->PG migration. Best-effort
+    # and behind DUAL_WRITE_PG. Each written item carries its final target state
+    # (completed/auto_resolved + operator + OOW); dual_write_observed does its own
+    # flip-else-insert against PG and never overwrites an existing terminal row.
+    if DUAL_WRITE_PG:
+        pg_items = []
+        for it in to_flip_loop + to_insert_loop:
+            pg_items.append({
+                "review_uid": it["review_uid"], "order_id": it["order_id"],
+                "platform": it["platform"], "status": "completed",
+                "operator_email": it.get("_matched_loop_username") or "",
+                "observed_out_of_window": bool(it.get("observed_out_of_window")),
+            })
+        for it in to_flip_ext + to_insert_ext:
+            pg_items.append({
+                "review_uid": it["review_uid"], "order_id": it["order_id"],
+                "platform": it["platform"], "status": "auto_resolved",
+                "operator_email": "",
+                "observed_out_of_window": bool(it.get("observed_out_of_window")),
+            })
+        dual_write_observed(pg_items)
+        dual_write_ops_log_bulk(log_entries)
 
     # Bust every cached dashboard read that touches the assignments table,
     # so an observation lands across the whole UI immediately rather than
