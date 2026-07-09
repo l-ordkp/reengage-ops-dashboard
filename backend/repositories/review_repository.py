@@ -416,28 +416,50 @@ def fetch_chain_value(
 
 @cached(ttl=300)
 def fetch_flow_activity_7d(period_days: int = 7) -> dict:
-    """Period-ACTIVITY (flow) view: events that happened in the last `period_days`,
-    each counted on its own event date (America/Chicago), independent of when the
-    review was posted. Companion to the stock view in get_chain_health().
+    """Period-ACTIVITY (flow) view: events in the last `period_days`, each counted
+    on its own event date in IST (Asia/Kolkata) — the same convention as the daily
+    throughput alert and the operators tab. Independent counts (they do NOT sum).
 
-      - ingested: in-scope reviews POSTED in the window.
-      - solved:   Loop completions with completed_at in the window (reliable signal,
-                  same as the daily throughput alert; external replies excluded).
+      - ingested: reviews that first ENTERED THE QUEUE in the window — MIN(assigned_at)
+                  per review (the daily 8 AM IST cron pickup). Same definition as the
+                  daily alert / operators tab / "Daily Loop" chart. NOT the posted date.
+      - solved:   Loop completions with completed_at in the window.
       - missed:   in-scope reviews whose DEADLINE fell in the window and were not
                   replied by that deadline.
 
-    Returns {period_start, period_end,
-      new_reviews: {total, doordash, ubereats, replied, pending, expired}  # cohort — replied+pending+expired sum to total
-      solved:      {total, doordash, ubereats}                              # Loop completions this week (independent)
-      missed:      {total, doordash, ubereats}                              # deadlines missed this week (independent)
-    }. new_reviews is a lifecycle funnel of THIS week's inflow (expired ~0 for a
-    fresh week — they haven't matured); solved/missed are independent event counts.
+    Returns {period_start, period_end, ingested/solved/missed: {total, doordash, ubereats}}.
     """
-    today_ct = datetime.now(ZoneInfo("America/Chicago")).date()
-    end_date = today_ct.isoformat()
-    start_date = (today_ct - timedelta(days=period_days - 1)).isoformat()
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    end_date = today.isoformat()
+    start_date = (today - timedelta(days=period_days - 1)).isoformat()
 
-    review_sql = f"""
+    # ingested = first day a review entered the assignments queue (MIN(assigned_at), IST) —
+    # matches throughput_notifier / operators tab. Assignments are already scoped (the cron
+    # only queues in-scope reviews), so no extra config filter is needed.
+    ingested_sql = f"""
+        WITH first_seen AS (
+          SELECT review_uid, platform, MIN(assigned_at) AS first_assigned
+          FROM `{TABLE_ASSIGNMENTS}`
+          GROUP BY review_uid, platform
+        )
+        SELECT platform, COUNT(*) AS total
+        FROM first_seen
+        WHERE DATE(first_assigned, 'Asia/Kolkata') BETWEEN DATE '{start_date}' AND DATE '{end_date}'
+        GROUP BY platform
+    """
+    # solved = Loop completions this week (completed_at, IST); throughput-wide (not re-scoped
+    # to non-paused chains), matching the daily/weekly notifiers. Independent count.
+    solved_sql = f"""
+        SELECT platform, COUNT(DISTINCT COALESCE(review_uid, order_id)) AS total
+        FROM `{TABLE_ASSIGNMENTS}`
+        WHERE status='completed' AND completed_at IS NOT NULL
+          AND DATE(completed_at, 'Asia/Kolkata') BETWEEN DATE '{start_date}' AND DATE '{end_date}'
+          AND NOT IFNULL(observed_out_of_window, FALSE)
+        GROUP BY platform
+    """
+    # missed = in-scope reviews whose deadline fell in the window (IST) and were not replied
+    # by that deadline (see replied_by_deadline note).
+    missed_sql = f"""
         WITH
         auto_res AS (
           SELECT DISTINCT key FROM (
@@ -451,24 +473,14 @@ def fetch_flow_activity_7d(period_days: int = 7) -> dict:
             UNION ALL SELECT order_id AS key, completed_at FROM `{TABLE_ASSIGNMENTS}` WHERE status='completed' AND completed_at IS NOT NULL AND order_id IS NOT NULL
           ) GROUP BY key
         ),
-        resolved AS (
-          SELECT DISTINCT key FROM (
-            SELECT review_uid AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status IN ('completed','auto_resolved')
-            UNION ALL SELECT order_id AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status IN ('completed','auto_resolved') AND order_id IS NOT NULL
-          )
-        ),
         base AS (
           SELECT
             COALESCE(ar.review_id, ar.order_id) AS review_uid, ar.order_id, ar.review_id, ar.platform, ar.is_replied,
-            DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp),'America/Chicago')) AS posted_date,
             CASE WHEN ar.platform='Doordash' THEN TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 7  DAY)
                  WHEN ar.platform='UberEats' THEN TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 14 DAY)
                  ELSE TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 7 DAY) END AS deadline_ts
           FROM `{TABLE_AUTOMATION_REVIEWS}` AS ar
           INNER JOIN `{TABLE_SLUG_AM_MAPPING}` AS sm ON ar.slug = sm.slug
-          -- Cover both legs: ingested (posted in window) and missed (deadline in
-          -- window => posted up to 14 days earlier). ~22-day COALESCE bound +
-          -- bare-column partition prune (see review_repository.py:65-77).
           WHERE COALESCE(ar.review_timestamp, ar.order_timestamp) >= TIMESTAMP(DATE_SUB(DATE '{start_date}', INTERVAL 15 DAY))
             AND (ar.review_timestamp >= TIMESTAMP(DATE_SUB(DATE '{start_date}', INTERVAL 16 DAY)) OR ar.review_timestamp IS NULL)
             AND ar.platform IN ('Doordash','UberEats')
@@ -483,71 +495,38 @@ def fetch_flow_activity_7d(period_days: int = 7) -> dict:
           QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(ar.review_id, ar.order_id) ORDER BY COALESCE(ar.review_timestamp, ar.order_timestamp) DESC) = 1
         ),
         enriched AS (
-          SELECT b.*, DATE(DATETIME(b.deadline_ts,'America/Chicago')) AS deadline_date,
-            (b.is_replied OR res_o.key IS NOT NULL OR res_r.key IS NOT NULL) AS replied_now,
+          SELECT b.*, DATE(b.deadline_ts, 'Asia/Kolkata') AS deadline_date,
             -- replied_by_deadline: only a Loop completion is time-checked (completed_at <= deadline).
-            -- Platform is_replied / external auto_resolved carry NO reply timestamp, so we assume
-            -- they were timely. Effect: a review answered LATE by the merchant is NOT flagged missed
-            -- (slight undercount). Deliberate, and consistent with the weekly Slack notifier — the
-            -- alternative (dropping is_replied) would OVERcount, flagging every timely external reply
-            -- as a miss. Fully accurate "missed" needs a reply timestamp we don't have.
+            -- Platform is_replied / external auto_resolved have no reply timestamp, so assumed timely
+            -- (slight undercount of late external replies). Matches the weekly Slack notifier.
             (b.is_replied OR are_o.key IS NOT NULL OR are_r.key IS NOT NULL
              OR (LEAST(IFNULL(ld_o.completed_at, TIMESTAMP '9999-12-31'),
                        IFNULL(ld_r.completed_at, TIMESTAMP '9999-12-31')) <= b.deadline_ts)) AS replied_by_deadline
           FROM base b
-          LEFT JOIN resolved res_o ON res_o.key=b.order_id
-          LEFT JOIN resolved res_r ON res_r.key=b.review_id
           LEFT JOIN auto_res  are_o ON are_o.key=b.order_id
           LEFT JOIN auto_res  are_r ON are_r.key=b.review_id
           LEFT JOIN loop_done ld_o  ON ld_o.key=b.order_id
           LEFT JOIN loop_done ld_r  ON ld_r.key=b.review_id
         )
-        SELECT
-          -- New-reviews cohort: posted in the window, split by CURRENT status (sums to nr_total)
-          COUNTIF(posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}')                          AS nr_total,
-          COUNTIF(posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND platform='Doordash')  AS nr_dd,
-          COUNTIF(posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND platform='UberEats')   AS nr_ue,
-          COUNTIF(posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND replied_now)           AS nr_replied,
-          COUNTIF(posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND NOT replied_now AND deadline_ts >  CURRENT_TIMESTAMP()) AS nr_pending,
-          COUNTIF(posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND NOT replied_now AND deadline_ts <= CURRENT_TIMESTAMP()) AS nr_expired,
-          -- Deadlines missed this week (by deadline date; independent of the cohort above)
-          COUNTIF(deadline_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND NOT replied_by_deadline)                          AS missed_total,
-          COUNTIF(deadline_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND NOT replied_by_deadline AND platform='Doordash')  AS missed_dd,
-          COUNTIF(deadline_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND NOT replied_by_deadline AND platform='UberEats')   AS missed_ue
+        SELECT platform, COUNT(*) AS total
         FROM enriched
-    """
-    # solved = Loop completions this week, counted across ALL assignments (throughput-wide),
-    # intentionally NOT re-scoped to currently-non-paused chains like new_reviews/missed are.
-    # This matches the daily throughput_notifier and the weekly Slack notifier, and it's an
-    # independent event count (it isn't meant to reconcile with the other two). A chain paused
-    # mid-week keeps the work Loop actually did that week.
-    solved_sql = f"""
-        SELECT platform, COUNT(DISTINCT COALESCE(review_uid, order_id)) AS total
-        FROM `{TABLE_ASSIGNMENTS}`
-        WHERE status='completed' AND completed_at IS NOT NULL
-          AND DATE(DATETIME(completed_at,'America/Chicago')) BETWEEN DATE '{start_date}' AND DATE '{end_date}'
-          AND NOT IFNULL(observed_out_of_window, FALSE)
+        WHERE deadline_date BETWEEN DATE '{start_date}' AND DATE '{end_date}' AND NOT replied_by_deadline
         GROUP BY platform
     """
-    rev = bq_read(review_sql).to_dict("records")[0]
-    sol = bq_read(solved_sql)
 
-    # New-reviews cohort — replied + pending + expired sum to total.
-    new_reviews = {
-        "total": int(rev["nr_total"]), "doordash": int(rev["nr_dd"]), "ubereats": int(rev["nr_ue"]),
-        "replied": int(rev["nr_replied"]), "pending": int(rev["nr_pending"]), "expired": int(rev["nr_expired"]),
-    }
-    missed = {
-        "total": int(rev["missed_total"]), "doordash": int(rev["missed_dd"]), "ubereats": int(rev["missed_ue"]),
-    }
-    solved = {"total": 0, "doordash": 0, "ubereats": 0}
-    for r in sol.to_dict("records"):
-        plat = "doordash" if r["platform"] == "Doordash" else "ubereats" if r["platform"] == "UberEats" else None
-        if plat:
-            solved[plat] = int(r["total"])
-    solved["total"] = solved["doordash"] + solved["ubereats"]
+    def _by_platform(df) -> dict:
+        out = {"total": 0, "doordash": 0, "ubereats": 0}
+        for r in df.to_dict("records"):
+            plat = "doordash" if r["platform"] == "Doordash" else "ubereats" if r["platform"] == "UberEats" else None
+            if plat:
+                out[plat] = int(r["total"])
+        out["total"] = out["doordash"] + out["ubereats"]
+        return out
 
     return {
-        "period_start": start_date, "period_end": end_date,
-        "new_reviews": new_reviews, "solved": solved, "missed": missed,
+        "period_start": start_date,
+        "period_end": end_date,
+        "ingested": _by_platform(bq_read(ingested_sql)),
+        "solved": _by_platform(bq_read(solved_sql)),
+        "missed": _by_platform(bq_read(missed_sql)),
     }

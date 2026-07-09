@@ -101,6 +101,13 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
             -- still counts in loop_completed and falls into the unknown
             -- bucket — the three buckets + unknown always sum to
             -- loop_completed.
+            --
+            -- One row per review (QUALIFY below): a review can carry >1
+            -- 'completed' row (the observed-reply insert path can race on a
+            -- stale snapshot), and counting rows would double-count it — and
+            -- desync the buckets from loop_completed. Dedupe by review so every
+            -- count here is distinct-by-review, matching the weekly alert,
+            -- dashboard flow, and operators tab.
             SELECT
                 platform,
                 COUNT(*) AS loop_completed,
@@ -125,6 +132,10 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
                   AND a.completed_at IS NOT NULL
                   AND DATE(a.completed_at, 'Asia/Kolkata') = DATE('{target_date}')
                   AND NOT IFNULL(a.observed_out_of_window, FALSE)
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(a.review_uid, a.order_id)
+                    ORDER BY a.completed_at
+                ) = 1
             )
             GROUP BY platform
         ),

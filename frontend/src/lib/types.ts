@@ -145,18 +145,14 @@ export interface FlowMetric {
   doordash: number;
   ubereats: number;
 }
-// New-reviews cohort (posted in the window). replied + pending + expired = total.
-export interface NewReviewsCohort extends FlowMetric {
-  replied: number;
-  pending: number;
-  expired: number;
-}
+// Independent 7-day activity counts (IST) — do not sum. Same conventions as the
+// daily throughput alert / operators tab.
 export interface ChainHealthFlow {
-  period_start: string;   // ISO date (America/Chicago)
+  period_start: string;   // ISO date (Asia/Kolkata)
   period_end: string;
-  new_reviews: NewReviewsCohort;  // lifecycle funnel of this week's inflow
-  solved: FlowMetric;     // Loop-completed in the window (independent event count)
-  missed: FlowMetric;     // deadline fell in the window, not replied by deadline (independent)
+  ingested: FlowMetric;   // first entered the queue this week (MIN assigned_at, IST)
+  solved: FlowMetric;     // Loop-completed this week (completed_at, IST)
+  missed: FlowMetric;     // deadline fell in the week, not replied by deadline
 }
 
 export interface ChainHealthResponse {

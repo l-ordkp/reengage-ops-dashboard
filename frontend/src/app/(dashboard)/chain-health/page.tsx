@@ -60,9 +60,10 @@ export default function ChainHealthPage() {
           title="This week"
           pill="7d"
           meta={flow ? `${fmtDate(flow.period_start)} – ${fmtDate(flow.period_end, true)}` : "last 7 days"}
-          sub="Reviews replied and expired during this week."
+          sub="Reviews that entered the queue, were replied, and expired during this week (IST)."
         />
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-3 gap-4">
+          <PlatformCard label="Ingested" metric={flow?.ingested} color="text-cyan-400" />
           <PlatformCard label="Replied" metric={flow?.solved} color="text-green-400" />
           <PlatformCard label="Expired" metric={flow?.missed} color="text-red-400" />
         </div>

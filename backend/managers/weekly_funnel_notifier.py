@@ -1,35 +1,29 @@
-"""Post last week's review ACTIVITY (flow) to Slack.
+"""Post last week's review ACTIVITY to Slack.
 
 Posts every Friday (piggybacking on the daily 8 AM IST assignment cron — see
-`maybe_send_weekly_funnel`) for the previous Fri–Thu week. Unlike a posted-cohort
-funnel, this is a FLOW report: it counts events that HAPPENED during the week,
-each bucketed by its OWN event date (America/Chicago), regardless of when the
-review was posted:
+`maybe_send_weekly_funnel`) for the previous Fri–Thu week. A FLOW report: it
+counts events that HAPPENED during the week, each on its OWN event date in IST
+(Asia/Kolkata) — the same conventions as the daily throughput alert and the
+operators tab:
 
-  • Ingested  — reviews POSTED in the week.
-  • Solved    — reviews Loop-COMPLETED in the week (by assignment completed_at).
-  • Expired   — reviews whose DEADLINE fell in the week and were not replied by
-                that deadline (can include reviews posted up to 7/14 days earlier).
+  • Ingested — reviews that first ENTERED THE QUEUE in the week: MIN(assigned_at)
+               per review (the 8 AM IST cron pickup). Same "ingested" as the daily
+               alert / operators tab / "Daily Loop" chart. NOT the posted date.
+  • Solved   — reviews Loop-COMPLETED in the week (assignment completed_at).
+  • Expired  — reviews whose DEADLINE fell in the week and were not replied by
+               that deadline (can include reviews posted 7/14 days earlier).
 
-These are three independent populations — they do NOT sum. Pending is
-intentionally omitted (it's a stock, i.e. "waiting right now", not a weekly
-event). Because Expired is bucketed by deadline date, everything it counts has
-already matured, so it shows the real number (no "fresh week reads ~0" artifact
-that a posted-cohort funnel has).
+Three independent counts — they do NOT sum. Pending is omitted (it's a stock,
+not a weekly event).
 
 Definitions / caveats:
   • Expired = deadline in-window AND NOT replied-by-deadline, where
-    "replied-by-deadline" = platform is_replied OR an external auto_resolved
-    assignment (both assumed timely — the platform gives no reply timestamp) OR
-    a Loop completion whose completed_at <= the deadline. So a Loop reply that
-    landed AFTER the deadline correctly still counts as a miss.
-  • Solved counts Loop completions only (reliable completed_at). External
-    replies have no trustworthy reply time, so they're not attributed to a week.
+    "replied-by-deadline" = platform is_replied / external auto_resolved (assumed
+    timely — no reply timestamp) OR a Loop completion with completed_at <= deadline.
+    A Loop reply landing AFTER the deadline still counts as a miss.
+  • Solved counts Loop completions only (reliable completed_at).
   • Expired keeps the late_ingestion_N / ingested_after_expiry breakdown
     (root cause: days from posted to first queued).
-
-In-scope universe mirrors the dashboard: `automation_reviews` ⨝ `slug_am_mapping`,
-scoped to a non-paused `review_response_config`, one row per review_uid (latest).
 
 Slack failures are logged and swallowed — never raises.
 """
@@ -50,10 +44,8 @@ from backend.config import (
 
 
 _CHANNEL = "#reengage-bot-notifications"
-# Gated on / anchored to the IST run day: the daily cron fires at 8 AM IST,
-# which is still the prior evening in CT. Anchoring the week to CT would read
-# one day earlier and report a week behind. (Event dates are bucketed in
-# America/Chicago inside the SQL.)
+# Everything is IST: the cron fires 8 AM IST, and ingested/solved/expired are
+# bucketed in Asia/Kolkata to match the daily alert + operators tab exactly.
 _IST = timezone(timedelta(hours=5, minutes=30))
 _FRIDAY = 4  # datetime.weekday(): Mon=0 … Fri=4
 
@@ -62,8 +54,7 @@ log = logging.getLogger(__name__)
 
 def _last_week_window() -> tuple[str, str]:
     """Most recently completed Fri–Thu week, anchored to the IST run day, as ISO
-    dates. Run on Fri Jul 3 -> ('2026-06-26', '2026-07-02'). Robust to any run
-    day: always the last full Fri–Thu before the current week's Friday."""
+    dates. Run on Fri Jul 3 -> ('2026-06-26', '2026-07-02')."""
     today = datetime.now(_IST).date()
     days_since_friday = (today.weekday() - _FRIDAY) % 7
     current_week_start = today - timedelta(days=days_since_friday)  # this week's Friday
@@ -86,63 +77,87 @@ def _in_scope_exists(review_alias: str = "ar", chain_expr: str = "sm.chain") -> 
     """
 
 
-def _fetch_review_flow(start_date: str, end_date: str) -> list[dict]:
-    """From `automation_reviews`: the INGESTED count (posted in window) and the
-    EXPIRED breakdown (deadline in window, not replied by deadline). Returns rows
-    with columns: metric ('INGESTED'|'EXPIRED'), bucket, reviews, doordash,
-    ubereats. Solved is fetched separately (assignments table)."""
+def _fetch_ingested(start_date: str, end_date: str) -> list[dict]:
+    """Reviews that first entered the assignments queue in the window
+    (MIN(assigned_at), IST) — the canonical "ingested", matching the daily alert /
+    operators tab. Assignments are already scoped (the cron only queues in-scope
+    reviews). Returns [{platform, total}]."""
+    sql = f"""
+        WITH first_seen AS (
+          SELECT review_uid, platform, MIN(assigned_at) AS first_assigned
+          FROM `{TABLE_ASSIGNMENTS}`
+          GROUP BY review_uid, platform
+        )
+        SELECT platform, COUNT(*) AS total
+        FROM first_seen
+        WHERE DATE(first_assigned, 'Asia/Kolkata') BETWEEN DATE '{start_date}' AND DATE '{end_date}'
+        GROUP BY platform
+    """
+    return bq_read(sql).to_dict("records")
+
+
+def _fetch_solved(start_date: str, end_date: str) -> list[dict]:
+    """Loop completions whose completed_at fell in the window (IST). Mirrors the
+    daily throughput notifier (excludes observed_out_of_window). Returns
+    [{platform, total}]."""
+    sql = f"""
+        SELECT platform, COUNT(DISTINCT COALESCE(review_uid, order_id)) AS total
+        FROM `{TABLE_ASSIGNMENTS}`
+        WHERE status='completed' AND completed_at IS NOT NULL
+          AND DATE(completed_at, 'Asia/Kolkata') BETWEEN DATE '{start_date}' AND DATE '{end_date}'
+          AND NOT IFNULL(observed_out_of_window, FALSE)
+        GROUP BY platform
+    """
+    return bq_read(sql).to_dict("records")
+
+
+def _fetch_expired(start_date: str, end_date: str) -> list[dict]:
+    """In-scope reviews whose DEADLINE fell in the window (IST) and were not replied
+    by that deadline, bucketed by root cause. Returns rows with columns: bucket
+    ('late_ingestion_N' | 'ingested_after_expiry'), reviews, doordash, ubereats."""
     sql = f"""
         WITH
-        -- external reply signal (assumed timely; no platform reply timestamp)
         auto_res AS (
           SELECT DISTINCT key FROM (
             SELECT review_uid AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status='auto_resolved'
-            UNION ALL
-            SELECT order_id  AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status='auto_resolved' AND order_id IS NOT NULL
+            UNION ALL SELECT order_id AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status='auto_resolved' AND order_id IS NOT NULL
           )
         ),
-        -- earliest Loop completion time per key (for replied-by-deadline test)
         loop_done AS (
           SELECT key, MIN(completed_at) AS completed_at FROM (
             SELECT review_uid AS key, completed_at FROM `{TABLE_ASSIGNMENTS}` WHERE status='completed' AND completed_at IS NOT NULL
-            UNION ALL
-            SELECT order_id  AS key, completed_at FROM `{TABLE_ASSIGNMENTS}` WHERE status='completed' AND completed_at IS NOT NULL AND order_id IS NOT NULL
+            UNION ALL SELECT order_id AS key, completed_at FROM `{TABLE_ASSIGNMENTS}` WHERE status='completed' AND completed_at IS NOT NULL AND order_id IS NOT NULL
           ) GROUP BY key
         ),
-        -- first time a review ever entered our queue (late_ingestion_N)
         asg_first AS (
           SELECT key, MIN(assigned_at) AS first_assigned FROM (
             SELECT review_uid AS key, assigned_at FROM `{TABLE_ASSIGNMENTS}`
-            UNION ALL
-            SELECT order_id  AS key, assigned_at FROM `{TABLE_ASSIGNMENTS}` WHERE order_id IS NOT NULL
+            UNION ALL SELECT order_id AS key, assigned_at FROM `{TABLE_ASSIGNMENTS}` WHERE order_id IS NOT NULL
           ) GROUP BY key
         ),
         base AS (
           SELECT
             COALESCE(ar.review_id, ar.order_id) AS review_uid, ar.order_id, ar.review_id, ar.platform, ar.is_replied,
-            DATE(DATETIME(COALESCE(ar.review_timestamp, ar.order_timestamp),'America/Chicago')) AS posted_date,
+            DATE(COALESCE(ar.review_timestamp, ar.order_timestamp), 'Asia/Kolkata') AS posted_date,
             CASE WHEN ar.platform='Doordash' THEN TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 7  DAY)
                  WHEN ar.platform='UberEats' THEN TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 14 DAY)
                  ELSE TIMESTAMP_ADD(COALESCE(ar.review_timestamp, ar.order_timestamp), INTERVAL 7 DAY) END AS deadline_ts
           FROM `{TABLE_AUTOMATION_REVIEWS}` AS ar
           INNER JOIN `{TABLE_SLUG_AM_MAPPING}` AS sm ON ar.slug = sm.slug
-          -- Scan wide enough for BOTH legs: ingested (posted in window) AND expired
-          -- (deadline in window => posted up to 14 days earlier). ±2 days tz slack.
-          -- COALESCE bound = correctness/row filter (also bounds NULL-review_timestamp
-          -- rows via order_timestamp); the bare-column arm below is the partition prune
-          -- (automation_reviews is DAY-partitioned on review_timestamp; IS NULL keeps
-          -- the fallback rows). Mirrors review_repository.py:65-77.
-          WHERE COALESCE(ar.review_timestamp, ar.order_timestamp) >= TIMESTAMP(DATE_SUB(DATE '{start_date}', INTERVAL 16 DAY))
-            AND COALESCE(ar.review_timestamp, ar.order_timestamp) < TIMESTAMP(DATE_ADD(DATE '{end_date}', INTERVAL 2 DAY))
-            AND (ar.review_timestamp >= TIMESTAMP(DATE_SUB(DATE '{start_date}', INTERVAL 16 DAY))
-                 OR ar.review_timestamp IS NULL)
+          -- deadline in window => posted up to ~14 days before start. COALESCE bound
+          -- + bare-column partition prune (see review_repository.py:65-77).
+          WHERE COALESCE(ar.review_timestamp, ar.order_timestamp) >= TIMESTAMP(DATE_SUB(DATE '{start_date}', INTERVAL 15 DAY))
+            AND (ar.review_timestamp >= TIMESTAMP(DATE_SUB(DATE '{start_date}', INTERVAL 16 DAY)) OR ar.review_timestamp IS NULL)
             AND ar.platform IN ('Doordash','UberEats')
             AND {_in_scope_exists()}
           QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(ar.review_id, ar.order_id) ORDER BY COALESCE(ar.review_timestamp, ar.order_timestamp) DESC) = 1
         ),
         enriched AS (
           SELECT b.*,
-            DATE(DATETIME(b.deadline_ts,'America/Chicago')) AS deadline_date,
+            DATE(b.deadline_ts, 'Asia/Kolkata') AS deadline_date,
+            -- replied_by_deadline: only a Loop completion is time-checked. Platform
+            -- is_replied / external auto_resolved have no reply timestamp, so assumed
+            -- timely (slight undercount of late external replies).
             (b.is_replied
              OR are_o.key IS NOT NULL OR are_r.key IS NOT NULL
              OR (LEAST(IFNULL(ld_o.completed_at, TIMESTAMP '9999-12-31'),
@@ -158,22 +173,13 @@ def _fetch_review_flow(start_date: str, end_date: str) -> list[dict]:
           LEFT JOIN asg_first f2    ON f2.key=b.order_id
           LEFT JOIN asg_first f3    ON f3.key=b.review_id
         )
-        -- INGESTED: posted in the window (all statuses; it's inflow)
-        SELECT 'INGESTED' AS metric, 'INGESTED' AS bucket,
-               COUNT(*) AS reviews,
-               COUNTIF(platform='Doordash') AS doordash,
-               COUNTIF(platform='UberEats') AS ubereats
-        FROM enriched
-        WHERE posted_date BETWEEN DATE '{start_date}' AND DATE '{end_date}'
-        UNION ALL
-        -- EXPIRED: deadline fell in the window and not replied by that deadline
-        SELECT 'EXPIRED' AS metric,
-               CASE WHEN first_assigned IS NULL THEN 'EXPIRED: ingested_after_expiry'
-                    ELSE CONCAT('EXPIRED: late_ingestion_',
-                                CAST(GREATEST(DATE_DIFF(DATE(DATETIME(first_assigned,'America/Chicago')), posted_date, DAY),0) AS STRING)) END AS bucket,
-               COUNT(*) AS reviews,
-               COUNTIF(platform='Doordash') AS doordash,
-               COUNTIF(platform='UberEats') AS ubereats
+        SELECT
+          CASE WHEN first_assigned IS NULL THEN 'ingested_after_expiry'
+               ELSE CONCAT('late_ingestion_',
+                           CAST(GREATEST(DATE_DIFF(DATE(first_assigned,'Asia/Kolkata'), posted_date, DAY),0) AS STRING)) END AS bucket,
+          COUNT(*) AS reviews,
+          COUNTIF(platform='Doordash') AS doordash,
+          COUNTIF(platform='UberEats') AS ubereats
         FROM enriched
         WHERE deadline_date BETWEEN DATE '{start_date}' AND DATE '{end_date}'
           AND NOT replied_by_deadline
@@ -182,82 +188,48 @@ def _fetch_review_flow(start_date: str, end_date: str) -> list[dict]:
     return bq_read(sql).to_dict("records")
 
 
-def _fetch_solved(start_date: str, end_date: str) -> list[dict]:
-    """Loop completions whose completed_at fell in the window (America/Chicago),
-    per platform. Mirrors the daily throughput notifier's 'completed' signal
-    (excludes observed_out_of_window so late observations of old replies don't
-    count)."""
-    sql = f"""
-        -- COALESCE(review_uid, order_id): review_uid is populated for every
-        -- completed row today, but the rest of this file keys on both, so match
-        -- that here too rather than silently drop any order_id-only completion.
-        SELECT platform, COUNT(DISTINCT COALESCE(review_uid, order_id)) AS solved
-        FROM `{TABLE_ASSIGNMENTS}`
-        WHERE status='completed'
-          AND completed_at IS NOT NULL
-          AND DATE(DATETIME(completed_at,'America/Chicago')) BETWEEN DATE '{start_date}' AND DATE '{end_date}'
-          AND NOT IFNULL(observed_out_of_window, FALSE)
-        GROUP BY platform
-    """
-    return bq_read(sql).to_dict("records")
-
-
 def _format_window(start_date: str, end_date: str) -> str:
     s = datetime.strptime(start_date, "%Y-%m-%d")
     e = datetime.strptime(end_date, "%Y-%m-%d")
-    # Show the start year too when the week straddles a year boundary (e.g. late Dec).
     start_fmt = "%d %b" if s.year == e.year else "%d %b %Y"
     return f"{s.strftime(start_fmt)} – {e.strftime('%d %b %Y')}"
 
 
 def _expired_sort_key(bucket: str) -> int:
-    """Order expired buckets: late_ingestion_N ascending by N, then
-    ingested_after_expiry last."""
     m = re.search(r"late_ingestion_(\d+)", bucket)
-    if m:
-        return int(m.group(1))
-    return 9999  # ingested_after_expiry
+    return int(m.group(1)) if m else 9999  # ingested_after_expiry last
+
+
+def _platform_totals(rows: list[dict], key: str = "total") -> tuple[int, int, int]:
+    by = {r["platform"]: int(r[key]) for r in rows}
+    dd, ue = by.get("Doordash", 0), by.get("UberEats", 0)
+    return dd + ue, dd, ue
 
 
 def _build_blocks(
-    start_date: str, end_date: str, review_rows: list[dict], solved_rows: list[dict]
+    start_date: str, end_date: str,
+    ingested_rows: list[dict], solved_rows: list[dict], expired_rows: list[dict],
 ) -> tuple[str, list[dict]]:
-    def _counts(r: dict | None) -> tuple[int, int, int]:
-        if not r:
-            return 0, 0, 0
-        return int(r["reviews"]), int(r["doordash"]), int(r["ubereats"])
-
-    ing_row = next((r for r in review_rows if r["metric"] == "INGESTED"), None)
-    expired_rows = sorted(
-        (r for r in review_rows if r["metric"] == "EXPIRED"),
-        key=lambda r: _expired_sort_key(r["bucket"]),
-    )
-
-    ing, ing_dd, ing_ue = _counts(ing_row)
+    ing, ing_dd, ing_ue = _platform_totals(ingested_rows)
+    sol, sol_dd, sol_ue = _platform_totals(solved_rows)
     exp = sum(int(r["reviews"]) for r in expired_rows)
     exp_dd = sum(int(r["doordash"]) for r in expired_rows)
     exp_ue = sum(int(r["ubereats"]) for r in expired_rows)
-
-    solved_by = {r["platform"]: int(r["solved"]) for r in solved_rows}
-    sol_dd, sol_ue = solved_by.get("Doordash", 0), solved_by.get("UberEats", 0)
-    sol = sol_dd + sol_ue
+    expired_sorted = sorted(expired_rows, key=lambda r: _expired_sort_key(r["bucket"]))
 
     window = _format_window(start_date, end_date)
 
     if ing == 0 and sol == 0 and exp == 0:
-        text = (
-            f":warning: No ReEngage activity for {window} (CT) — "
-            "verify pipeline if unexpected."
-        )
+        text = f":warning: No ReEngage activity for {window} (IST) — verify pipeline if unexpected."
         return text, [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
 
-    header = f":bar_chart: *ReEngage weekly activity — {window} (CT)*"
+    header = f":bar_chart: *ReEngage weekly activity — {window} (IST)*"
 
     def _line(label: str, tot: int, dd: int, ue: int) -> str:
         return f"*{label}*  ·  `{tot}`   (DD `{dd}` · UE `{ue}`)"
 
     body_lines = [
-        _line("Ingested (posted this week)", ing, ing_dd, ing_ue),
+        _line("Ingested (entered queue this week)", ing, ing_dd, ing_ue),
         _line("Solved (Loop-completed this week)", sol, sol_dd, sol_ue),
         _line("Expired (deadline missed this week)", exp, exp_dd, exp_ue),
     ]
@@ -267,37 +239,32 @@ def _build_blocks(
     ]
 
     if exp > 0:
-        breakdown_lines = [":mag: *Expired — root cause* _(days from posted to first queued)_"]
-        for r in expired_rows:
-            tot, dd, ue = _counts(r)
-            label = r["bucket"].split("EXPIRED: ", 1)[-1]
-            breakdown_lines.append(f"• `{label}`  ·  `{tot}`   (DD `{dd}` · UE `{ue}`)")
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(breakdown_lines)}})
+        breakdown = [":mag: *Expired — root cause* _(days from posted to first queued)_"]
+        for r in expired_sorted:
+            breakdown.append(f"• `{r['bucket']}`  ·  `{int(r['reviews'])}`   (DD `{int(r['doordash'])}` · UE `{int(r['ubereats'])}`)")
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(breakdown)}})
 
     note = (
-        "_Activity view — each number counts events that happened this week by their own "
-        "date, so they're independent and don't sum. *Ingested* = posted this week; "
-        "*Solved* = Loop-completed this week; *Expired* = deadline fell this week and was "
-        "missed. `late_ingestion_N` = days from posted to first actionable; "
-        "`ingested_after_expiry` = never queued before the deadline._"
+        "_Independent weekly counts (they don't sum), all IST. *Ingested* = first entered the "
+        "queue this week (same as the daily alert / operators tab); *Solved* = Loop-completed "
+        "this week; *Expired* = deadline fell this week and was missed. `late_ingestion_N` = "
+        "days from posted to first actionable; `ingested_after_expiry` = never queued before the deadline._"
     )
-
-    text_fallback = (
-        f"ReEngage weekly activity {window}: ingested {ing}, solved {sol}, expired {exp}"
-    )
+    text_fallback = f"ReEngage weekly activity {window}: ingested {ing}, solved {sol}, expired {exp}"
     blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": note}]})
     return text_fallback, blocks
 
 
 def send_last_week_funnel() -> None:
-    """Post last week's (Fri–Thu) review activity to Slack. Never raises.
-    Use this for unconditional/manual triggers; the daily cron uses
-    `maybe_send_weekly_funnel` so it only fires on Fridays."""
+    """Post last week's (Fri–Thu) review activity to Slack. Never raises."""
     try:
         start_date, end_date = _last_week_window()
-        review_rows = _fetch_review_flow(start_date, end_date)
-        solved_rows = _fetch_solved(start_date, end_date)
-        text, blocks = _build_blocks(start_date, end_date, review_rows, solved_rows)
+        text, blocks = _build_blocks(
+            start_date, end_date,
+            _fetch_ingested(start_date, end_date),
+            _fetch_solved(start_date, end_date),
+            _fetch_expired(start_date, end_date),
+        )
         post_message(_CHANNEL, text=text, blocks=blocks)
         log.info("weekly_funnel_notifier: posted %s..%s", start_date, end_date)
     except Exception as e:
@@ -306,8 +273,6 @@ def send_last_week_funnel() -> None:
 
 def maybe_send_weekly_funnel() -> None:
     """Daily-cron hook: post the weekly activity only on Fridays (IST); a no-op on
-    other days so the daily throughput post stands alone. The schedule is the
-    existing 8 AM IST assignment cron — no separate scheduler. Never raises
-    (delegates to send_last_week_funnel, which swallows its own errors)."""
+    other days. Never raises (delegates to send_last_week_funnel)."""
     if datetime.now(_IST).weekday() == _FRIDAY:
         send_last_week_funnel()
