@@ -22,7 +22,11 @@ from __future__ import annotations
 import random
 import uuid
 from collections import defaultdict
+from datetime import timedelta
 
+import pandas as pd
+
+from backend.config import DUAL_WRITE_PG
 from backend.repositories.assignment_repository import (
     expire_stale_assignments,
     fetch_already_assigned_uids,
@@ -30,8 +34,36 @@ from backend.repositories.assignment_repository import (
     void_pending_assignments,
 )
 from backend.repositories.ops_log_repository import log_action
+from backend.repositories.pg_reengage_repository import (
+    dual_write_expire_pending,
+    dual_write_insert_pending,
+    dual_write_void_pending,
+)
 from backend.repositories.review_repository import fetch_reviews_14d
 from backend.repositories.user_repository import fetch_approved_operators
+
+
+def _response_deadline(event_timestamp, platform):
+    """Precise raw-interval platform deadline: review_timestamp + 7d (DoorDash)
+    / 14d (UberEats), computed from the exact event_timestamp — NOT the
+    hour-truncated hours_left — so PG's pure-PG expiry predicate matches BQ's
+    expire_stale_assignments to the second. Returns None on missing/NaT."""
+    if event_timestamp is None:
+        return None
+    try:
+        ts = pd.Timestamp(event_timestamp)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(ts):
+        return None
+    if ts.tz is None:
+        ts = ts.tz_localize("UTC")
+    # Match BQ expire_stale_assignments' platform windows. An unrecognized
+    # platform maps to a 0-day window (deadline == event_timestamp, already in
+    # the past) so PG expires it promptly — mirroring BQ's ELSE
+    # CURRENT_TIMESTAMP() (immediate expiry) rather than silently granting 14d.
+    days = {"Doordash": 7, "UberEats": 14}.get(platform, 0)
+    return (ts + timedelta(days=days)).to_pydatetime()
 
 SOFT_CAP_MULTIPLIER = 1.20
 # hot = critical/urgent priority as computed by fetch_reviews_14d (<= 48h to
@@ -49,8 +81,12 @@ HOT_CAP_FLOOR = 5
 def run_assignment(full_reassign: bool = True) -> dict:
     """Main entry point — invoked by cron and manual trigger."""
     expire_stale_assignments()
+    if DUAL_WRITE_PG:
+        dual_write_expire_pending()
     if full_reassign:
         void_pending_assignments()
+        if DUAL_WRITE_PG:
+            dual_write_void_pending()
 
     reviews = fetch_reviews_14d()
     operators = fetch_approved_operators()
@@ -78,6 +114,8 @@ def run_assignment(full_reassign: bool = True) -> dict:
 
     if assignments:
         insert_assignments(assignments)
+        if DUAL_WRITE_PG:
+            dual_write_insert_pending(assignments)
 
     summary = _build_summary(assignments, ops, group_plan)
     log_action(
@@ -257,6 +295,10 @@ def _materialize_assignments(ops, group_plan, groups) -> list[dict]:
                 # the assignments table. The column is metadata-only — live
                 # status/priority is recomputed from hours_left on each read.
                 "days_left": max(int(rev["hours_left"] // 24), 0),
+                # PG-only: precise raw-interval deadline (review_timestamp +
+                # 7/14d) for the pure-Postgres expiry predicate. Ignored by the
+                # BQ insert (no such column there).
+                "response_deadline": _response_deadline(rev.get("event_timestamp"), plat),
             })
     return rows
 

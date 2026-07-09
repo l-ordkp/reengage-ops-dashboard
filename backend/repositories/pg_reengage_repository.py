@@ -272,3 +272,102 @@ def dual_write_observed(items: list[dict]) -> None:
         )
 
     _safe("dual_write_observed", work)
+
+
+# ── Assignment-cron dual-writes (run_assignment) ──────────────────────────────
+
+def dual_write_expire_pending() -> None:
+    """Mirror expire_stale_assignments: pending -> expired once past the stamped
+    response_deadline. `<=` matches BQ's `CURRENT_TIMESTAMP() >= deadline`
+    boundary. Only rows with a deadline set are touched (see the insert path,
+    which stamps the precise review_timestamp + 7/14d)."""
+    now = datetime.now(timezone.utc)
+
+    def work(session: Session) -> None:
+        session.execute(
+            text("""
+                UPDATE reengage_assignments
+                SET status = 'expired', updated_at = :now
+                WHERE status = 'pending'
+                  AND response_deadline IS NOT NULL
+                  AND response_deadline <= :now
+            """),
+            {"now": now},
+        )
+
+    _safe("dual_write_expire_pending", work)
+
+
+def dual_write_void_pending() -> None:
+    """Mirror void_pending_assignments: all pending -> reassigned (the
+    full-reassign tombstone step)."""
+    now = datetime.now(timezone.utc)
+
+    def work(session: Session) -> None:
+        session.execute(
+            text("""
+                UPDATE reengage_assignments
+                SET status = 'reassigned', updated_at = :now
+                WHERE status = 'pending'
+            """),
+            {"now": now},
+        )
+
+    _safe("dual_write_void_pending", work)
+
+
+def dual_write_insert_pending(rows: list[dict]) -> None:
+    """Mirror insert_assignments: bulk-insert freshly-assigned pending rows.
+    Each row: assignment_id, review_uid, order_id, operator_email, chain_name,
+    platform, days_left, response_deadline (may be None).
+
+    Commits PER CHUNK so a 40-80k-row cron insert doesn't hold row locks / a
+    pooled connection on shared prod loop_core for the whole batch (a long
+    single transaction risks statement/idle-in-transaction timeouts). Partial
+    progress on failure is fine — ON CONFLICT (assignment_id) DO NOTHING makes a
+    re-run idempotent. Session lifecycle is guarded so nothing escapes.
+    """
+    if not rows:
+        return
+    now = datetime.now(timezone.utc)
+    sql = text("""
+        INSERT INTO reengage_assignments
+            (assignment_id, review_uid, order_id, operator_email, chain_name,
+             platform, days_left, status, assigned_at, response_deadline,
+             created_at, updated_at)
+        VALUES
+            (:assignment_id, :review_uid, :order_id, :operator_email, :chain_name,
+             :platform, :days_left, 'pending', :now, :response_deadline, :now, :now)
+        ON CONFLICT (assignment_id) DO NOTHING
+    """)
+    CHUNK = 2000
+    session = None
+    try:
+        session = get_pg_session()
+        for i in range(0, len(rows), CHUNK):
+            params = [{
+                "assignment_id": r["assignment_id"],
+                "review_uid": r["review_uid"],
+                "order_id": (r.get("order_id") or None),
+                "operator_email": r["operator_email"],
+                "chain_name": r.get("chain_name") or "",
+                "platform": r.get("platform") or "",
+                "days_left": r.get("days_left"),
+                "response_deadline": r.get("response_deadline"),
+                "now": now,
+            } for r in rows[i:i + CHUNK]]
+            session.execute(sql, params)
+            session.commit()  # per-chunk: bound lock/connection hold time
+    except Exception as e:
+        if session is not None:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+        logger.warning("dual_write_insert_pending failed (partial, %d rows): %s", len(rows), e)
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass

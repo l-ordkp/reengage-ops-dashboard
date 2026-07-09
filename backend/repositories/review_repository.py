@@ -215,7 +215,7 @@ def fetch_reviews_14d() -> pd.DataFrame:
         customer_name, customer_id, orders_count, customer_type,
         CAST(star_rating AS STRING) AS star_rating, rating_type, rating_value,
         rating_numeric, rating_display, review_text, items, order_value,
-        review_date, hours_left,
+        review_date, hours_left, event_timestamp,
         portal_link, response_text, ai_response_type AS response_type, coupon_value,
         CAST(config_id AS STRING) AS config_id, status, priority,
         is_replied,
