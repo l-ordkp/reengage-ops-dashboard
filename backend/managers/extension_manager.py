@@ -9,6 +9,7 @@ import uuid
 
 from fastapi import HTTPException
 
+from backend.config import DUAL_WRITE_PG
 from backend.repositories.assignment_repository import (
     bulk_flip_pending_to,
     bulk_insert_observed_assignments,
@@ -29,6 +30,10 @@ from backend.repositories.extension_repository import (
     resolve_canonical_order_id,
 )
 from backend.repositories.ops_log_repository import log_action, log_actions_bulk
+from backend.repositories.pg_reengage_repository import (
+    dual_write_mark_completed,
+    dual_write_ops_log,
+)
 from backend.repositories.operator_repository import (
     fetch_daily_loop_completed_14d,
     fetch_operator_chain_breakdown_14d,
@@ -153,6 +158,21 @@ def mark_responded(
             order_id=order_id,
             platform_reply_id=platform_reply_id,
             platform_coupon_id=platform_coupon_id,
+        )
+
+    # Dual-write to Postgres (loop_core) during the BQ->PG migration. Best-effort
+    # and behind DUAL_WRITE_PG — a PG failure never affects the BQ writes above
+    # or this response. Reads still come from BigQuery.
+    if DUAL_WRITE_PG:
+        dual_write_ops_log(
+            review_uid=review_uid, platform=platform, chain_name=chain_name,
+            action="mark_responded", operator_email=operator_email,
+            performed_by=operator_email, remarks=qc_info,
+        )
+        dual_write_mark_completed(
+            review_uid=review_uid, order_id=order_id, operator_email=operator_email,
+            platform=platform, chain_name=chain_name,
+            platform_reply_id=platform_reply_id, platform_coupon_id=platform_coupon_id,
         )
 
     return {
