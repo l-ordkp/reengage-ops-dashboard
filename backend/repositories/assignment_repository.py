@@ -261,30 +261,60 @@ def bulk_insert_observed_assignments(items: list[dict]) -> None:
     The `operator_email` column reflects who actually replied. The `''`
     sentinel means "no Loop operator did this work" (the column is NOT NULL
     in BQ). The observer is recorded in ops_log via `performed_by`.
+
+    Idempotent: (a) dedups the batch by review (keeping 'completed' over
+    'auto_resolved'), and (b) skips any review that ALREADY has a terminal
+    (completed/auto_resolved) row via a NOT EXISTS guard — so a duplicate or
+    late re-observation can't create a second terminal row. BigQuery has no
+    constraints and inserts have visibility lag, so this is best-effort
+    (reads still dedupe by review_uid as the ultimate guard), but it stops the
+    common double-observation from duplicating rows.
     """
     if not items:
         return
     import uuid
     now = _now_str()
-    value_rows = []
+    # (a) dedupe within the batch by COALESCE(review_uid, order_id); completed wins.
+    _rank = {"completed": 1, "auto_resolved": 0}
+    by_key: dict[str, dict] = {}
     for item in items:
+        key = item.get("review_uid") or item.get("order_id")
+        cur = by_key.get(key)
+        if cur is None or _rank.get(item.get("status"), 0) > _rank.get(cur.get("status"), 0):
+            by_key[key] = item
+    structs = []
+    for item in by_key.values():
         status = item.get("status") or "auto_resolved"
         op_email = (item.get("operator_email") or "").strip()
         oow_sql = "TRUE" if item.get("observed_out_of_window") else "FALSE"
-        value_rows.append(
-            f"('{uuid.uuid4()}', '{_escape_sql(item['review_uid'])}', '{_escape_sql(item['order_id'])}', "
-            f"'{_escape_sql(op_email)}', '{_escape_sql(item.get('chain_name', ''))}', '{_escape_sql(item['platform'])}', "
-            f"0, '{_escape_sql(status)}', TIMESTAMP('{now}'), TIMESTAMP('{now}'), NULL, NULL, {oow_sql})"
+        structs.append(
+            f"STRUCT('{uuid.uuid4()}' AS assignment_id, '{_escape_sql(item['review_uid'])}' AS review_uid, "
+            f"'{_escape_sql(item['order_id'])}' AS order_id, '{_escape_sql(op_email)}' AS operator_email, "
+            f"'{_escape_sql(item.get('chain_name', ''))}' AS chain_name, '{_escape_sql(item['platform'])}' AS platform, "
+            f"'{_escape_sql(status)}' AS status, TIMESTAMP('{now}') AS ts, {oow_sql} AS oow)"
         )
     batch_size = 500
-    for start in range(0, len(value_rows), batch_size):
-        batch = value_rows[start:start + batch_size]
+    for start in range(0, len(structs), batch_size):
+        batch = structs[start:start + batch_size]
+        # (b) INSERT ... SELECT with a NOT EXISTS guard against existing terminal rows.
         bq_exec(f"""
             INSERT INTO `{TABLE_ASSIGNMENTS}`
                 (assignment_id, review_uid, order_id, operator_email,
                  chain_name, platform, days_left, status, assigned_at, completed_at,
                  platform_reply_id, platform_coupon_id, observed_out_of_window)
-            VALUES {', '.join(batch)}
+            SELECT s.assignment_id, s.review_uid, s.order_id, s.operator_email,
+                   s.chain_name, s.platform, 0, s.status, s.ts, s.ts, NULL, NULL, s.oow
+            FROM UNNEST([{', '.join(batch)}]) AS s
+            -- Two single-equality NOT EXISTS (BigQuery can't anti-join an OR of
+            -- equalities): skip if a terminal row already exists under either key.
+            WHERE NOT EXISTS (
+              SELECT 1 FROM `{TABLE_ASSIGNMENTS}` a
+              WHERE a.review_uid = s.review_uid AND a.status IN ('completed', 'auto_resolved')
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM `{TABLE_ASSIGNMENTS}` a2
+              WHERE a2.order_id = s.order_id AND s.order_id != '' AND a2.status IN ('completed', 'auto_resolved')
+            )
         """)
 
 
