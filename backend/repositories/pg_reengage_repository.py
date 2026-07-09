@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -201,54 +202,73 @@ def dual_write_observed(items: list[dict]) -> None:
     missed_but_ours, 'auto_resolved' for external), operator_email (matched Loop
     username, or '' for external), observed_out_of_window.
 
-    Per item: flip a pending PG row to the target terminal status (mirrors
-    bulk_flip_pending_to — resets operator_email and the OOW flag, stamps
-    completed_at); if there's no pending row, insert a terminal row. The INSERT
-    uses ON CONFLICT DO NOTHING (NOT DO UPDATE) because an observation must
-    never overwrite an existing terminal row — a real submit's completed row
-    stays intact — matching the manager's "already-terminal rows are skipped".
+    Batched (not per-item) to keep this synchronous handler's PG cost to a few
+    statements regardless of batch size:
+      1. One UPDATE per (status, operator, OOW) group flips matching pending
+         rows. Matched on review_uid OR order_id (both indexed —
+         ix_reengage_assignment_review / _order — and matching BQ's
+         bulk_flip_pending_to, which keys on review_uid OR order_id). A
+         NOT EXISTS guard skips any row that already has a terminal sibling, so
+         the flip can never create a second terminal row (no unique violation).
+      2. One bulk INSERT of all items with ON CONFLICT DO NOTHING. Rows that
+         were just flipped, or that already had a terminal row, conflict and are
+         skipped — so an observation never overwrites a real submit's completed
+         row (matching the manager's "already-terminal rows are skipped").
     """
     if not items:
         return
     now = datetime.now(timezone.utc)
 
+    # Group flips by their target (status, operator, OOW) so each group is one
+    # UPDATE. Collect the review_uids/order_ids to match pending rows on.
+    groups: dict[tuple, dict[str, list]] = defaultdict(lambda: {"ruids": [], "oids": []})
+    for it in items:
+        if not _canonical(it.get("review_uid"), it.get("order_id")):
+            continue
+        key = (it["status"], it.get("operator_email") or "",
+               bool(it.get("observed_out_of_window")))
+        if it.get("review_uid"):
+            groups[key]["ruids"].append(it["review_uid"])
+        if it.get("order_id"):
+            groups[key]["oids"].append(it["order_id"])
+
     def work(session: Session) -> None:
-        for it in items:
-            ck = _canonical(it.get("review_uid"), it.get("order_id"))
-            if not ck:
-                continue
-            status = it["status"]
-            op = it.get("operator_email") or ""
-            oow = bool(it.get("observed_out_of_window"))
-            flipped = session.execute(
+        for (status, op, oow), g in groups.items():
+            session.execute(
                 text("""
-                    UPDATE reengage_assignments
+                    UPDATE reengage_assignments AS a
                     SET status = :status, operator_email = :op,
                         observed_out_of_window = :oow,
                         completed_at = :now, updated_at = :now
-                    WHERE canonical_review_key = :ck AND status = 'pending'
+                    WHERE a.status = 'pending'
+                      AND (a.review_uid = ANY(:ruids) OR a.order_id = ANY(:oids))
+                      AND NOT EXISTS (
+                          SELECT 1 FROM reengage_assignments t
+                          WHERE t.canonical_review_key = a.canonical_review_key
+                            AND t.status IN ('completed', 'auto_resolved'))
                 """),
-                {"status": status, "op": op, "oow": oow, "now": now, "ck": ck},
-            ).rowcount
-            if flipped == 0:
-                session.execute(
-                    text("""
-                        INSERT INTO reengage_assignments
-                            (assignment_id, review_uid, order_id, operator_email, chain_name,
-                             platform, status, assigned_at, completed_at,
-                             observed_out_of_window, created_at, updated_at)
-                        VALUES
-                            (:aid, :review_uid, :order_id, :op, '', :platform,
-                             :status, :now, :now, :oow, :now, :now)
-                        ON CONFLICT (canonical_review_key)
-                            WHERE status IN ('completed', 'auto_resolved')
-                                  AND canonical_review_key IS NOT NULL
-                        DO NOTHING
-                    """),
-                    {"aid": str(uuid.uuid4()), "review_uid": it.get("review_uid") or "",
-                     "order_id": it.get("order_id"), "op": op,
-                     "platform": it.get("platform") or "", "status": status,
-                     "oow": oow, "now": now},
-                )
+                {"status": status, "op": op, "oow": oow, "now": now,
+                 "ruids": g["ruids"], "oids": g["oids"]},
+            )
+        session.execute(
+            text("""
+                INSERT INTO reengage_assignments
+                    (assignment_id, review_uid, order_id, operator_email, chain_name,
+                     platform, days_left, status, assigned_at, completed_at,
+                     observed_out_of_window, created_at, updated_at)
+                VALUES
+                    (:aid, :review_uid, :order_id, :op, '', :platform, 0,
+                     :status, :now, :now, :oow, :now, :now)
+                ON CONFLICT (canonical_review_key)
+                    WHERE status IN ('completed', 'auto_resolved')
+                          AND canonical_review_key IS NOT NULL
+                DO NOTHING
+            """),
+            [{"aid": str(uuid.uuid4()), "review_uid": it.get("review_uid") or "",
+              "order_id": it.get("order_id"), "op": it.get("operator_email") or "",
+              "platform": it.get("platform") or "", "status": it["status"],
+              "oow": bool(it.get("observed_out_of_window")), "now": now}
+             for it in items if _canonical(it.get("review_uid"), it.get("order_id"))],
+        )
 
     _safe("dual_write_observed", work)
