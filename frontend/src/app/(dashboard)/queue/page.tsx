@@ -30,6 +30,7 @@ export default function QueuePage() {
   // Metric-card counts describe the whole queue, so use the pre-filter array.
   const pendingCount = reviews.filter((r) => r.status === "PENDING").length;
   const criticalCount = reviews.filter((r) => r.priority === "CRITICAL").length;
+  const urgentPendingCount = reviews.filter((r) => r.priority === "URGENT" && r.status === "PENDING").length;
 
   function handleFilterChange(key: string, value: string) {
     setFilters((prev) => ({ ...prev, [key]: value }));
@@ -57,10 +58,11 @@ export default function QueuePage() {
       </div>
 
       {/* Metrics */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <MetricCard label="Assigned" value={data?.reviews?.length ?? 0} color="text-blue-400" />
         <MetricCard label="Pending" value={pendingCount} color="text-yellow-400" />
         <MetricCard label="Critical" value={criticalCount} color="text-red-500" />
+        <MetricCard label="Urgent" value={urgentPendingCount} color="text-orange-400" />
         <MetricCard label="Missing AI Response" value={missingAI} color="text-orange-400" />
       </div>
 
