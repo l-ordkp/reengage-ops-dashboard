@@ -80,13 +80,16 @@ HOT_CAP_FLOOR = 5
 
 def run_assignment(full_reassign: bool = True) -> dict:
     """Main entry point — invoked by cron and manual trigger."""
-    expire_stale_assignments()
+    # PG-FIRST (BQ->PG migration): mirror into Postgres BEFORE each BigQuery
+    # write, so PG stays complete even when the BQ DML times out / collides.
+    # Best-effort + behind DUAL_WRITE_PG; reads still come from BigQuery.
     if DUAL_WRITE_PG:
         dual_write_expire_pending()
+    expire_stale_assignments()
     if full_reassign:
-        void_pending_assignments()
         if DUAL_WRITE_PG:
             dual_write_void_pending()
+        void_pending_assignments()
 
     reviews = fetch_reviews_14d()
     operators = fetch_approved_operators()
@@ -113,9 +116,9 @@ def run_assignment(full_reassign: bool = True) -> dict:
     assignments = _materialize_assignments(ops, group_plan, groups)
 
     if assignments:
-        insert_assignments(assignments)
         if DUAL_WRITE_PG:
             dual_write_insert_pending(assignments)
+        insert_assignments(assignments)
 
     summary = _build_summary(assignments, ops, group_plan)
     log_action(

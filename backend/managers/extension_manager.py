@@ -120,6 +120,23 @@ def mark_responded(
         match_d = "exact" if exact_match_discount else "MISMATCH"
         qc_info = f"{platform_short}|resp:{match_r}|disc:{match_d}"
 
+    # PG-FIRST (BQ->PG migration): mirror into Postgres BEFORE the BigQuery
+    # writes below, so a reply is captured in PG even when the BQ write later
+    # times out / collides (the 504s). Best-effort + behind DUAL_WRITE_PG; a PG
+    # failure never affects the BQ writes or this response. Reads still come
+    # from BigQuery. Once PG is proven complete vs BQ, the BQ writes get removed.
+    if DUAL_WRITE_PG:
+        dual_write_ops_log(
+            review_uid=review_uid, platform=platform, chain_name=chain_name,
+            action="mark_responded", operator_email=operator_email,
+            performed_by=operator_email, remarks=qc_info,
+        )
+        dual_write_mark_completed(
+            review_uid=review_uid, order_id=order_id, operator_email=operator_email,
+            platform=platform, chain_name=chain_name,
+            platform_reply_id=platform_reply_id, platform_coupon_id=platform_coupon_id,
+        )
+
     log_action(
         review_uid=review_uid,
         platform=platform,
@@ -160,21 +177,6 @@ def mark_responded(
             order_id=order_id,
             platform_reply_id=platform_reply_id,
             platform_coupon_id=platform_coupon_id,
-        )
-
-    # Dual-write to Postgres (loop_core) during the BQ->PG migration. Best-effort
-    # and behind DUAL_WRITE_PG — a PG failure never affects the BQ writes above
-    # or this response. Reads still come from BigQuery.
-    if DUAL_WRITE_PG:
-        dual_write_ops_log(
-            review_uid=review_uid, platform=platform, chain_name=chain_name,
-            action="mark_responded", operator_email=operator_email,
-            performed_by=operator_email, remarks=qc_info,
-        )
-        dual_write_mark_completed(
-            review_uid=review_uid, order_id=order_id, operator_email=operator_email,
-            platform=platform, chain_name=chain_name,
-            platform_reply_id=platform_reply_id, platform_coupon_id=platform_coupon_id,
         )
 
     return {
