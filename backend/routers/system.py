@@ -8,7 +8,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 
 from backend.auth.dependencies import ALGORITHM, SECRET_KEY, get_current_user
 from backend.enums.role import LEAD_ROLES
+from backend.config import FOCUSED_ASSIGNMENT_MODE
 from backend.managers.assignment_manager import run_assignment
+from backend.managers.focused_assignment_manager import run_focused_assignment
 from backend.managers.throughput_notifier import send_yesterday_throughput
 from backend.managers.weekly_funnel_notifier import (
     maybe_send_weekly_funnel,
@@ -46,7 +48,10 @@ def trigger_assignment(
     """Cloud Scheduler bypasses JWT (User-Agent check). Manual triggers require lead/manager JWT."""
     is_cron = _is_scheduler_or_lead(user_agent, authorization)
 
-    result = run_assignment(full_reassign=body.full_reassign)
+    if FOCUSED_ASSIGNMENT_MODE:
+        result = run_focused_assignment(full_reassign=body.full_reassign)
+    else:
+        result = run_assignment(full_reassign=body.full_reassign)
 
     # Synchronous (not BackgroundTasks): if the response gets cut by an
     # upstream timeout, BackgroundTasks may never fire. The Slack call

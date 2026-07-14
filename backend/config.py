@@ -29,3 +29,9 @@ ALL_ROLES    = [ROLE_MANAGER, ROLE_LEAD, ROLE_TENURED, ROLE_NEW]
 # BigQuery writes during the BQ->PG migration. Best-effort (PG failures never
 # break the BQ path) and OFF by default. Enable with DUAL_WRITE_PG=true.
 DUAL_WRITE_PG = os.environ.get("DUAL_WRITE_PG", "false").lower() in ("1", "true", "yes")
+
+# TEMPORARY: route the assignment cron to the focused algorithm (critical +
+# urgent + small near-urgent buffer only; far normals left unassigned). See
+# backend/managers/focused_assignment_manager.py. ON by default; set
+# FOCUSED_ASSIGNMENT_MODE=false to fall back to the full two-cap partition.
+FOCUSED_ASSIGNMENT_MODE = os.environ.get("FOCUSED_ASSIGNMENT_MODE", "true").lower() in ("1", "true", "yes")
