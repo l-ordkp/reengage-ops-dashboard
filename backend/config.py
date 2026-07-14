@@ -24,12 +24,6 @@ ROLE_TENURED = "tenured_operator"
 ROLE_NEW     = "new_operator"
 ALL_ROLES    = [ROLE_MANAGER, ROLE_LEAD, ROLE_TENURED, ROLE_NEW]
 
-# ── Migration flags ───────────────────────────────────────────────────────────
-# Dual-write extension writes to Postgres (loop_core) alongside the authoritative
-# BigQuery writes during the BQ->PG migration. Best-effort (PG failures never
-# break the BQ path) and OFF by default. Enable with DUAL_WRITE_PG=true.
-DUAL_WRITE_PG = os.environ.get("DUAL_WRITE_PG", "false").lower() in ("1", "true", "yes")
-
 # TEMPORARY: route the assignment cron to the focused algorithm (critical +
 # urgent + small near-urgent buffer only; far normals left unassigned). See
 # backend/managers/focused_assignment_manager.py. ON by default; set

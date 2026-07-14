@@ -44,7 +44,7 @@ def remove_user(email: str, performed_by: str) -> None:
     from backend.repositories.assignment_repository import (
         redistribute_assignments_for_removed_operator,
     )
-    from backend.repositories.ops_log_repository import log_action
+    from backend.repositories.pg_reengage_repository import log_action
 
     n_redistributed = redistribute_assignments_for_removed_operator(email)
     repo_delete_user(email)

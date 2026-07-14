@@ -144,7 +144,7 @@ def generate_batch(body: GenerateBatchBody, user: dict = Depends(get_current_use
     # Audit trail: one ops_log row per chunk, summarising who did what.
     # Surface chain/platform when the chunk is uniform (common after chain-scoped
     # generate); otherwise mark "all" so downstream filters still work.
-    from backend.repositories.ops_log_repository import log_action
+    from backend.repositories.pg_reengage_repository import log_action
 
     chunk_uids = set(body.review_uids)
     chunk_rows = df[df["review_uid"].isin(chunk_uids)]

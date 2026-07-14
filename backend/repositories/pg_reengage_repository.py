@@ -1,15 +1,14 @@
-"""Dual-write of extension writes to Postgres (loop_core) during the BQ->PG
-migration.
+"""Postgres (loop_core) repository for the ReEngage OLTP tables — the
+AUTHORITATIVE write path for `reengage_assignments` and `reengage_ops_log`.
 
-Every function here is BEST-EFFORT: it runs through `_safe`, which opens the
-session INSIDE the try, swallows and logs any error (including session/engine
-construction, rollback, and close), and never raises — so a Postgres failure
-can never break the authoritative BigQuery write path. Gated by
-config.DUAL_WRITE_PG (off by default).
+These are the primary writers (no longer a best-effort BigQuery mirror): a
+failure RAISES so the caller (and ultimately the extension / cron) sees the
+error and can retry, rather than silently losing a reply. `_write` owns the
+session lifecycle (open inside the try, commit, guarded rollback/close) and
+re-raises on failure.
 
-Targets the tables from loop_core migration 4a4ee4129539 (reengage_assignments,
-reengage_ops_log). `canonical_review_key` is a generated column
-(COALESCE(NULLIF(review_uid,''), NULLIF(order_id,''))) and the terminal partial
+`canonical_review_key` is a generated column
+(COALESCE(NULLIF(review_uid,''), NULLIF(order_id,''))); the terminal partial
 unique index (status IN ('completed','auto_resolved')) is the dedup guard, so
 the mark/observed race can't create two terminal rows.
 """
@@ -29,27 +28,23 @@ from backend.clients.pg_client import get_pg_session
 logger = logging.getLogger(__name__)
 
 
-def _safe(op_name: str, work: Callable[[Session], None]) -> None:
-    """Run `work(session)` and commit, guaranteeing nothing escapes.
-
-    The session is created INSIDE the try, so engine/config construction errors
-    are caught too; rollback() and close() are individually guarded so a broken
-    connection can't re-raise past us. This is what makes the dual-write
-    genuinely best-effort — the caller (mark_responded / run_assignment) never
-    sees an exception, even though the authoritative BigQuery write already ran.
-    """
+def _write(op_name: str, work: Callable[[Session], None]) -> None:
+    """Run `work(session)` and commit. On failure: roll back, close, and
+    RE-RAISE — these are authoritative writes, so the caller must know a write
+    failed (unlike the old best-effort dual-write, which swallowed errors)."""
     session = None
     try:
         session = get_pg_session()
         work(session)
         session.commit()
-    except Exception as e:
+    except Exception:
         if session is not None:
             try:
                 session.rollback()
             except Exception:
                 pass
-        logger.warning("%s failed: %s", op_name, e)
+        logger.exception("%s failed", op_name)
+        raise
     finally:
         if session is not None:
             try:
@@ -66,26 +61,25 @@ def _canonical(review_uid: str | None, order_id: str | None) -> str | None:
     return (review_uid or None) or (order_id or None)
 
 
-def dual_write_mark_completed(
+# ── Assignment writes ─────────────────────────────────────────────────────────
+
+def mark_completed(
     *, review_uid: str | None, order_id: str | None, operator_email: str,
     platform: str, chain_name: str = "",
     platform_reply_id: str = "", platform_coupon_id: str = "",
 ) -> None:
-    """Mirror mark_responded's assignment write into Postgres.
-
-    Matches the BQ semantics: flip an existing pending row to completed; if none
-    exists, insert a completed row — and if a terminal row already exists,
-    promote/keep it (an auto_resolved sibling, operator_email='', is promoted to
-    the submitter; a real completed row's operator is left intact). The terminal
-    partial unique index guarantees at most one terminal row per review.
-    """
+    """Flip an existing pending row to completed; if none exists, insert a
+    completed row — and if a terminal row already exists, promote/keep it (an
+    auto_resolved sibling, operator_email='', is promoted to the submitter; a
+    real completed row's operator is left intact). The terminal partial unique
+    index guarantees at most one terminal row per review."""
     ck = _canonical(review_uid, order_id)
     if not ck:
         return
     now = datetime.now(timezone.utc)
 
     def work(session: Session) -> None:
-        # 1) Flip an existing pending row (== update_assignment_by_order_id).
+        # 1) Flip an existing pending row.
         flipped = session.execute(
             text("""
                 UPDATE reengage_assignments
@@ -99,7 +93,7 @@ def dual_write_mark_completed(
         ).rowcount
 
         # 2) No pending row -> insert a completed row, or promote an existing
-        #    terminal one (handles the insert + promote_auto_resolved cases).
+        #    terminal one (insert + promote_auto_resolved cases).
         if flipped == 0:
             session.execute(
                 text("""
@@ -136,91 +130,26 @@ def dual_write_mark_completed(
                  "reply_id": platform_reply_id, "coupon_id": platform_coupon_id},
             )
 
-    _safe("dual_write_mark_completed", work)
+    _write("mark_completed", work)
 
 
-def dual_write_ops_log(
-    *, review_uid: str | None, platform: str, chain_name: str, action: str,
-    operator_email: str, performed_by: str, remarks: str = "",
-) -> None:
-    """Append one audit row to reengage_ops_log (best-effort)."""
-    now = datetime.now(timezone.utc)
-
-    def work(session: Session) -> None:
-        session.execute(
-            text("""
-                INSERT INTO reengage_ops_log
-                    (entry_id, review_uid, platform, chain_name, action,
-                     operator_email, performed_by, remarks, processing_timestamp,
-                     created_at, updated_at)
-                VALUES
-                    (:entry_id, :review_uid, :platform, :chain_name, :action,
-                     :operator_email, :performed_by, :remarks, :now, :now, :now)
-            """),
-            {"entry_id": str(uuid.uuid4()), "review_uid": review_uid or "",
-             "platform": platform or "", "chain_name": chain_name or "",
-             "action": action, "operator_email": operator_email or "",
-             "performed_by": performed_by or "", "remarks": remarks or "", "now": now},
-        )
-
-    _safe("dual_write_ops_log", work)
-
-
-def dual_write_ops_log_bulk(entries: list[dict]) -> None:
-    """Bulk variant of dual_write_ops_log for the observed-responded batch.
-    Each entry: review_uid, platform, chain_name, action, operator_email,
-    performed_by, remarks."""
-    if not entries:
-        return
-    now = datetime.now(timezone.utc)
-
-    def work(session: Session) -> None:
-        session.execute(
-            text("""
-                INSERT INTO reengage_ops_log
-                    (entry_id, review_uid, platform, chain_name, action,
-                     operator_email, performed_by, remarks, processing_timestamp,
-                     created_at, updated_at)
-                VALUES
-                    (:entry_id, :review_uid, :platform, :chain_name, :action,
-                     :operator_email, :performed_by, :remarks, :now, :now, :now)
-            """),
-            [{"entry_id": str(uuid.uuid4()), "review_uid": e.get("review_uid") or "",
-              "platform": e.get("platform") or "", "chain_name": e.get("chain_name") or "",
-              "action": e.get("action") or "", "operator_email": e.get("operator_email") or "",
-              "performed_by": e.get("performed_by") or "", "remarks": e.get("remarks") or "",
-              "now": now} for e in entries],
-        )
-
-    _safe("dual_write_ops_log_bulk", work)
-
-
-def dual_write_observed(items: list[dict]) -> None:
-    """Mirror observed_responded's assignment writes into Postgres.
+def write_observed(items: list[dict]) -> None:
+    """observed_responded's assignment writes.
 
     Each item: review_uid, order_id, platform, status ('completed' for
     missed_but_ours, 'auto_resolved' for external), operator_email (matched Loop
     username, or '' for external), observed_out_of_window.
 
-    Batched (not per-item) to keep this synchronous handler's PG cost to a few
-    statements regardless of batch size:
-      1. One UPDATE per (status, operator, OOW) group flips matching pending
-         rows. Matched on review_uid OR order_id (both indexed —
-         ix_reengage_assignment_review / _order — and matching BQ's
-         bulk_flip_pending_to, which keys on review_uid OR order_id). A
-         NOT EXISTS guard skips any row that already has a terminal sibling, so
-         the flip can never create a second terminal row (no unique violation).
-      2. One bulk INSERT of all items with ON CONFLICT DO NOTHING. Rows that
-         were just flipped, or that already had a terminal row, conflict and are
-         skipped — so an observation never overwrites a real submit's completed
-         row (matching the manager's "already-terminal rows are skipped").
+    Batched: one UPDATE per (status, operator, OOW) group flips matching pending
+    rows (matched on review_uid OR order_id, both indexed; a NOT EXISTS guard
+    skips rows with a terminal sibling so no second terminal row is created),
+    then one bulk INSERT with ON CONFLICT DO NOTHING so an observation never
+    overwrites a real submit's completed row.
     """
     if not items:
         return
     now = datetime.now(timezone.utc)
 
-    # Group flips by their target (status, operator, OOW) so each group is one
-    # UPDATE. Collect the review_uids/order_ids to match pending rows on.
     groups: dict[tuple, dict[str, list]] = defaultdict(lambda: {"ruids": [], "oids": []})
     for it in items:
         if not _canonical(it.get("review_uid"), it.get("order_id")):
@@ -271,16 +200,12 @@ def dual_write_observed(items: list[dict]) -> None:
              for it in items if _canonical(it.get("review_uid"), it.get("order_id"))],
         )
 
-    _safe("dual_write_observed", work)
+    _write("write_observed", work)
 
 
-# ── Assignment-cron dual-writes (run_assignment) ──────────────────────────────
-
-def dual_write_expire_pending() -> None:
-    """Mirror expire_stale_assignments: pending -> expired once past the stamped
-    response_deadline. `<=` matches BQ's `CURRENT_TIMESTAMP() >= deadline`
-    boundary. Only rows with a deadline set are touched (see the insert path,
-    which stamps the precise review_timestamp + 7/14d)."""
+def expire_pending() -> None:
+    """pending -> expired once past the stamped response_deadline (`<=` matches
+    BQ's `CURRENT_TIMESTAMP() >= deadline`). Only rows with a deadline set."""
     now = datetime.now(timezone.utc)
 
     def work(session: Session) -> None:
@@ -295,12 +220,11 @@ def dual_write_expire_pending() -> None:
             {"now": now},
         )
 
-    _safe("dual_write_expire_pending", work)
+    _write("expire_pending", work)
 
 
-def dual_write_void_pending() -> None:
-    """Mirror void_pending_assignments: all pending -> reassigned (the
-    full-reassign tombstone step)."""
+def void_pending() -> None:
+    """All pending -> reassigned (the full-reassign tombstone step)."""
     now = datetime.now(timezone.utc)
 
     def work(session: Session) -> None:
@@ -313,19 +237,19 @@ def dual_write_void_pending() -> None:
             {"now": now},
         )
 
-    _safe("dual_write_void_pending", work)
+    _write("void_pending", work)
 
 
-def dual_write_insert_pending(rows: list[dict]) -> None:
-    """Mirror insert_assignments: bulk-insert freshly-assigned pending rows.
-    Each row: assignment_id, review_uid, order_id, operator_email, chain_name,
-    platform, days_left, response_deadline (may be None).
+def insert_pending(rows: list[dict]) -> None:
+    """Bulk-insert freshly-assigned pending rows. Each row: assignment_id,
+    review_uid, order_id, operator_email, chain_name, platform, days_left,
+    response_deadline (may be None).
 
-    Commits PER CHUNK so a 40-80k-row cron insert doesn't hold row locks / a
-    pooled connection on shared prod loop_core for the whole batch (a long
-    single transaction risks statement/idle-in-transaction timeouts). Partial
-    progress on failure is fine — ON CONFLICT (assignment_id) DO NOTHING makes a
-    re-run idempotent. Session lifecycle is guarded so nothing escapes.
+    Commits PER CHUNK so a 40-80k-row cron insert doesn't hold locks / a pooled
+    connection for the whole batch. ON CONFLICT (assignment_id) DO NOTHING makes
+    a re-run idempotent. On failure: rollback, close, and RAISE (authoritative)
+    — partial progress from earlier chunks stays committed, which is fine given
+    the idempotent conflict clause.
     """
     if not rows:
         return
@@ -358,13 +282,100 @@ def dual_write_insert_pending(rows: list[dict]) -> None:
             } for r in rows[i:i + CHUNK]]
             session.execute(sql, params)
             session.commit()  # per-chunk: bound lock/connection hold time
-    except Exception as e:
+    except Exception:
         if session is not None:
             try:
                 session.rollback()
             except Exception:
                 pass
-        logger.warning("dual_write_insert_pending failed (partial, %d rows): %s", len(rows), e)
+        logger.exception("insert_pending failed (partial, %d rows)", len(rows))
+        raise
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+
+# ── ops_log writes ────────────────────────────────────────────────────────────
+
+def log_action(
+    review_uid: str, platform: str, chain_name: str, action: str,
+    operator_email: str, performed_by: str, remarks: str = "",
+) -> None:
+    """Insert one audit row into reengage_ops_log. Same signature as the old
+    BigQuery log_action so call sites are unchanged."""
+    now = datetime.now(timezone.utc)
+
+    def work(session: Session) -> None:
+        session.execute(
+            text("""
+                INSERT INTO reengage_ops_log
+                    (entry_id, review_uid, platform, chain_name, action,
+                     operator_email, performed_by, remarks, processing_timestamp,
+                     created_at, updated_at)
+                VALUES
+                    (:entry_id, :review_uid, :platform, :chain_name, :action,
+                     :operator_email, :performed_by, :remarks, :now, :now, :now)
+            """),
+            {"entry_id": str(uuid.uuid4()), "review_uid": review_uid or "",
+             "platform": platform or "", "chain_name": chain_name or "",
+             "action": action, "operator_email": operator_email or "",
+             "performed_by": performed_by or "", "remarks": remarks or "", "now": now},
+        )
+
+    _write("log_action", work)
+
+
+def log_actions_bulk(entries: list[dict]) -> None:
+    """Bulk variant of log_action. Each entry: review_uid, platform, chain_name,
+    action, operator_email, performed_by, remarks."""
+    if not entries:
+        return
+    now = datetime.now(timezone.utc)
+
+    def work(session: Session) -> None:
+        session.execute(
+            text("""
+                INSERT INTO reengage_ops_log
+                    (entry_id, review_uid, platform, chain_name, action,
+                     operator_email, performed_by, remarks, processing_timestamp,
+                     created_at, updated_at)
+                VALUES
+                    (:entry_id, :review_uid, :platform, :chain_name, :action,
+                     :operator_email, :performed_by, :remarks, :now, :now, :now)
+            """),
+            [{"entry_id": str(uuid.uuid4()), "review_uid": e.get("review_uid") or "",
+              "platform": e.get("platform") or "", "chain_name": e.get("chain_name") or "",
+              "action": e.get("action") or "", "operator_email": e.get("operator_email") or "",
+              "performed_by": e.get("performed_by") or "", "remarks": e.get("remarks") or "",
+              "now": now} for e in entries],
+        )
+
+    _write("log_actions_bulk", work)
+
+
+# ── Assignment reads (write-coupled) ──────────────────────────────────────────
+
+def fetch_already_assigned_uids() -> set[str]:
+    """UIDs the cron should skip re-ingesting: reviews with a pending / completed
+    / auto_resolved row in the last 14 days. PG-native replacement for the BQ
+    version (reads must be fresh, so this hits Postgres directly, not the CDC
+    mirror)."""
+    def work(session: Session):
+        return session.execute(
+            text("""
+                SELECT DISTINCT review_uid FROM reengage_assignments
+                WHERE status IN ('pending', 'completed', 'auto_resolved')
+                  AND assigned_at >= now() - interval '14 days'
+            """)
+        ).fetchall()
+    session = None
+    try:
+        session = get_pg_session()
+        rows = work(session)
+        return {r[0] for r in rows if r[0]}
     finally:
         if session is not None:
             try:

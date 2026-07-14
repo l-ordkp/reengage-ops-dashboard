@@ -22,24 +22,18 @@ from __future__ import annotations
 import os
 from collections import defaultdict
 
-from backend.config import DUAL_WRITE_PG
 from backend.managers.assignment_manager import (
     HOT_PRIORITIES,
     _build_group_plan,
     _build_operator_state,
     _materialize_assignments,
 )
-from backend.repositories.assignment_repository import (
-    expire_stale_assignments,
-    fetch_already_assigned_uids,
-    insert_assignments,
-    void_pending_assignments,
-)
-from backend.repositories.ops_log_repository import log_action
 from backend.repositories.pg_reengage_repository import (
-    dual_write_expire_pending,
-    dual_write_insert_pending,
-    dual_write_void_pending,
+    expire_pending,
+    fetch_already_assigned_uids,
+    insert_pending,
+    log_action,
+    void_pending,
 )
 from backend.repositories.review_repository import fetch_reviews_14d
 from backend.repositories.user_repository import fetch_approved_operators
@@ -53,9 +47,7 @@ NEAR_BUFFER_PER_OPERATOR = int(os.getenv("NEAR_BUFFER_PER_OPERATOR", "150"))
 
 def run_focused_assignment(full_reassign: bool = True) -> dict:
     """Entry point — same contract and write choreography as run_assignment."""
-    if DUAL_WRITE_PG:
-        dual_write_expire_pending()
-    expire_stale_assignments()
+    expire_pending()
     # NOTE: unlike run_assignment, voiding of current pending assignments is
     # DEFERRED until the new plan has passed its invariant check (see below).
     # This function can abort on a bad plan; voiding first would leave every
@@ -119,14 +111,10 @@ def run_focused_assignment(full_reassign: bool = True) -> dict:
     # Plan verified — now it is safe to void the old queues and write the new
     # ones. PG-first ordering preserved for both operations.
     if full_reassign:
-        if DUAL_WRITE_PG:
-            dual_write_void_pending()
-        void_pending_assignments()
+        void_pending()
 
     if assignments:
-        if DUAL_WRITE_PG:
-            dual_write_insert_pending(assignments)
-        insert_assignments(assignments)
+        insert_pending(assignments)
 
     unassigned_normals = len(pending) - len(assignments)
     summary = {

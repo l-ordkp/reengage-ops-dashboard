@@ -8,7 +8,7 @@ from backend.managers.queue_manager import get_my_queue
 from backend.repositories.assignment_repository import (
     fetch_my_pending_assignments, mark_assignment_completed,
 )
-from backend.repositories.ops_log_repository import log_action
+from backend.repositories.pg_reengage_repository import log_action
 
 router = APIRouter(prefix="/api/assignments", tags=["assignments"])
 

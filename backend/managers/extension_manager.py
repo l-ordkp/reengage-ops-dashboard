@@ -9,17 +9,9 @@ import uuid
 
 from fastapi import HTTPException
 
-from backend.config import DUAL_WRITE_PG
 from backend.repositories.assignment_repository import (
-    bulk_flip_pending_to,
-    bulk_insert_observed_assignments,
-    fetch_assignment_by_order_id,
     fetch_assignments_by_ids,
-    insert_completed_assignment,
     mark_is_loop_replied,
-    promote_auto_resolved_to_completed,
-    update_assignment_by_order_id,
-    update_assignment_platform_ids,
 )
 from backend.repositories.extension_repository import (
     fetch_loop_usernames_for_stores,
@@ -29,12 +21,11 @@ from backend.repositories.extension_repository import (
     lookup_review_uid_by_order,
     resolve_canonical_order_id,
 )
-from backend.repositories.ops_log_repository import log_action, log_actions_bulk
 from backend.repositories.pg_reengage_repository import (
-    dual_write_mark_completed,
-    dual_write_observed,
-    dual_write_ops_log,
-    dual_write_ops_log_bulk,
+    log_action,
+    log_actions_bulk,
+    mark_completed,
+    write_observed,
 )
 from backend.repositories.operator_repository import (
     fetch_daily_loop_completed_14d,
@@ -120,64 +111,19 @@ def mark_responded(
         match_d = "exact" if exact_match_discount else "MISMATCH"
         qc_info = f"{platform_short}|resp:{match_r}|disc:{match_d}"
 
-    # PG-FIRST (BQ->PG migration): mirror into Postgres BEFORE the BigQuery
-    # writes below, so a reply is captured in PG even when the BQ write later
-    # times out / collides (the 504s). Best-effort + behind DUAL_WRITE_PG; a PG
-    # failure never affects the BQ writes or this response. Reads still come
-    # from BigQuery. Once PG is proven complete vs BQ, the BQ writes get removed.
-    if DUAL_WRITE_PG:
-        dual_write_ops_log(
-            review_uid=review_uid, platform=platform, chain_name=chain_name,
-            action="mark_responded", operator_email=operator_email,
-            performed_by=operator_email, remarks=qc_info,
-        )
-        dual_write_mark_completed(
-            review_uid=review_uid, order_id=order_id, operator_email=operator_email,
-            platform=platform, chain_name=chain_name,
-            platform_reply_id=platform_reply_id, platform_coupon_id=platform_coupon_id,
-        )
-
+    # Record the reply in Postgres (authoritative): one audit row, then
+    # flip/insert the assignment to completed. mark_completed carries the
+    # platform reply/coupon IDs and handles the pending-flip, fresh-insert, and
+    # auto_resolved-promotion cases against the terminal-uniqueness guard.
     log_action(
-        review_uid=review_uid,
-        platform=platform,
-        chain_name=chain_name,
-        action="mark_responded",
-        operator_email=operator_email,
-        performed_by=operator_email,
-        remarks=qc_info,
+        review_uid, platform, chain_name, "mark_responded",
+        operator_email, operator_email, qc_info,
     )
-
-    # Update or insert the assignment row. assignment_status='completed' is
-    # now the canonical signal that Loop replied — Chain Health and the
-    # status field on fetch_reviews_14d both derive is_loop_replied from
-    # this. We no longer write back to elt_data.automation_reviews (that
-    # was breaking dbt's MERGE).
-    existing = fetch_assignment_by_order_id(order_id)
-    if not existing.empty:
-        update_assignment_by_order_id(order_id)
-        # Race fallback: if an observation classified this order as
-        # auto_resolved before the operator submitted, promote that row to
-        # completed and overwrite operator_email to the real submitter. The
-        # two helpers each target ONE status, so they can't double-flip when
-        # a pending and an auto_resolved row both exist for one order_id.
-        promote_auto_resolved_to_completed(order_id, operator_email)
-    else:
-        insert_completed_assignment(
-            review_uid=review_uid, order_id=order_id, operator_email=operator_email,
-            chain_name=chain_name, platform=platform,
-            platform_reply_id=platform_reply_id,
-            platform_coupon_id=platform_coupon_id,
-        )
-
-    # Persist platform-issued IDs onto the assignment row. Done as a separate
-    # UPDATE so the existing-row branch above also gets the IDs without
-    # widening update_assignment_by_order_id's responsibilities.
-    if platform_reply_id or platform_coupon_id:
-        update_assignment_platform_ids(
-            order_id=order_id,
-            platform_reply_id=platform_reply_id,
-            platform_coupon_id=platform_coupon_id,
-        )
+    mark_completed(
+        review_uid=review_uid, order_id=order_id, operator_email=operator_email,
+        platform=platform, chain_name=chain_name,
+        platform_reply_id=platform_reply_id, platform_coupon_id=platform_coupon_id,
+    )
 
     return {
         "success": True,
@@ -332,66 +278,26 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
         else:
             (to_insert_loop if matched else to_insert_ext).append(item_with_match)
 
-    # Apply DB writes per bucket. bulk_flip_pending_to also resets
-    # operator_email — to the matched Loop username for `missed_but_ours`,
-    # to NULL for `external` (clearing the original pending assignee since
-    # they didn't actually do the work).
-    if to_flip_loop:
-        # Group by (matched username, observed_out_of_window) so each batch
-        # UPDATE writes one consistent (operator_email, flag) pair. In
-        # practice all flips in a single batch will share a username per
-        # slug; the secondary grouping by the OOW flag is defensive — pending
-        # rows are virtually always in-window (cron only creates pending for
-        # fresh reviews), but we want the grouping to be correct if a stale
-        # pending row ever ends up in this code path.
-        by_key: dict[tuple[str, bool], list[dict]] = {}
-        for item in to_flip_loop:
-            key = (item["_matched_loop_username"], bool(item.get("observed_out_of_window")))
-            by_key.setdefault(key, []).append(item)
-        for (username, oow), group in by_key.items():
-            bulk_flip_pending_to(
-                review_uids=[v["review_uid"] for v in group],
-                order_ids=[v["order_id"] for v in group],
-                new_status="completed",
-                new_operator_email=username,
-                observed_out_of_window=oow,
-            )
-    if to_flip_ext:
-        # Same grouping by the OOW flag so the UPDATE writes a single value.
-        by_oow: dict[bool, list[dict]] = {}
-        for item in to_flip_ext:
-            by_oow.setdefault(bool(item.get("observed_out_of_window")), []).append(item)
-        for oow, group in by_oow.items():
-            bulk_flip_pending_to(
-                review_uids=[v["review_uid"] for v in group],
-                order_ids=[v["order_id"] for v in group],
-                new_status="auto_resolved",
-                new_operator_email="",
-                observed_out_of_window=oow,
-            )
-    if to_insert_loop or to_insert_ext:
-        insert_payload = []
-        for item in to_insert_loop:
-            insert_payload.append({
-                "review_uid": item["review_uid"],
-                "order_id": item["order_id"],
-                "platform": item["platform"],
-                "chain_name": "",
-                "status": "completed",
-                "operator_email": item["_matched_loop_username"],
-                "observed_out_of_window": bool(item.get("observed_out_of_window")),
-            })
-        for item in to_insert_ext:
-            insert_payload.append({
-                "review_uid": item["review_uid"],
-                "order_id": item["order_id"],
-                "platform": item["platform"],
-                "chain_name": "",
-                "status": "auto_resolved",
-                "operator_email": "",
-                "observed_out_of_window": bool(item.get("observed_out_of_window")),
-            })
-        bulk_insert_observed_assignments(insert_payload)
+    # Persist to Postgres (authoritative): flip pending rows / insert terminal
+    # rows for each observed reply. Loop-matched -> completed (attributed to the
+    # matched username); external -> auto_resolved. write_observed does the
+    # flip-else-insert against the terminal-uniqueness guard.
+    pg_items = []
+    for it in to_flip_loop + to_insert_loop:
+        pg_items.append({
+            "review_uid": it["review_uid"], "order_id": it["order_id"],
+            "platform": it["platform"], "status": "completed",
+            "operator_email": it.get("_matched_loop_username") or "",
+            "observed_out_of_window": bool(it.get("observed_out_of_window")),
+        })
+    for it in to_flip_ext + to_insert_ext:
+        pg_items.append({
+            "review_uid": it["review_uid"], "order_id": it["order_id"],
+            "platform": it["platform"], "status": "auto_resolved",
+            "operator_email": "",
+            "observed_out_of_window": bool(it.get("observed_out_of_window")),
+        })
+    write_observed(pg_items)
 
     log_entries: list[dict] = []
     for item in to_flip_loop:
@@ -437,28 +343,6 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
     if log_entries:
         log_actions_bulk(log_entries)
 
-    # Dual-write to Postgres (loop_core) during the BQ->PG migration. Best-effort
-    # and behind DUAL_WRITE_PG. Each written item carries its final target state
-    # (completed/auto_resolved + operator + OOW); dual_write_observed does its own
-    # flip-else-insert against PG and never overwrites an existing terminal row.
-    if DUAL_WRITE_PG:
-        pg_items = []
-        for it in to_flip_loop + to_insert_loop:
-            pg_items.append({
-                "review_uid": it["review_uid"], "order_id": it["order_id"],
-                "platform": it["platform"], "status": "completed",
-                "operator_email": it.get("_matched_loop_username") or "",
-                "observed_out_of_window": bool(it.get("observed_out_of_window")),
-            })
-        for it in to_flip_ext + to_insert_ext:
-            pg_items.append({
-                "review_uid": it["review_uid"], "order_id": it["order_id"],
-                "platform": it["platform"], "status": "auto_resolved",
-                "operator_email": "",
-                "observed_out_of_window": bool(it.get("observed_out_of_window")),
-            })
-        dual_write_observed(pg_items)
-        dual_write_ops_log_bulk(log_entries)
 
     # Bust every cached dashboard read that touches the assignments table,
     # so an observation lands across the whole UI immediately rather than
