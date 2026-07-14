@@ -53,13 +53,13 @@ def test_every_hot_review_assigned_and_nothing_far():
     pending, hot, near, _, assignments, buffer_assignments, _ = plan_focused(
         WORKLOAD, SEVEN_OPS)
     all_assigned = assignments + buffer_assignments
-    uids = [a["review_uid"] for a in all_assigned]
-    assert len(uids) == len(set(uids)), "duplicate assignment"
+    assigned_uids = [assignment["review_uid"] for assignment in all_assigned]
+    assert len(assigned_uids) == len(set(assigned_uids)), "duplicate assignment"
     hot_uids = set(hot["review_uid"])
-    assert hot_uids <= set(uids), "hot review left unassigned"
+    assert hot_uids <= set(assigned_uids), "hot review left unassigned"
     # nothing beyond the near-urgent window may be assigned
-    eligible = hot_uids | set(near["review_uid"])
-    assert set(uids) <= eligible, "far-out normal was assigned"
+    eligible_uids = hot_uids | set(near["review_uid"])
+    assert set(assigned_uids) <= eligible_uids, "far-out normal was assigned"
     # and the far mass is genuinely left out
     assert len(pending) - len(all_assigned) > 0
 
@@ -81,46 +81,48 @@ def test_buffer_prefers_owned_chains():
     was left when I went outside' is.)"""
     _, _, near, ops, _, buffer_assignments, hot_groups_by_op = plan_focused(
         WORKLOAD, SEVEN_OPS)
-    near_by_group = near.groupby(["chain_name", "platform"]).size().to_dict()
-    buf_by_op_group = defaultdict(lambda: defaultdict(int))
-    for a in buffer_assignments:
-        buf_by_op_group[a["operator_email"]][(a["chain_name"], a["platform"])] += 1
-    taken_by_group = defaultdict(int)
-    for per_group in buf_by_op_group.values():
-        for g, n in per_group.items():
-            taken_by_group[g] += n
+    near_stock_per_group = near.groupby(["chain_name", "platform"]).size().to_dict()
+    buffer_rows_per_operator = defaultdict(lambda: defaultdict(int))
+    for assignment in buffer_assignments:
+        group_key = (assignment["chain_name"], assignment["platform"])
+        buffer_rows_per_operator[assignment["operator_email"]][group_key] += 1
+    buffer_taken_per_group = defaultdict(int)
+    for rows_per_group in buffer_rows_per_operator.values():
+        for group_key, row_count in rows_per_group.items():
+            buffer_taken_per_group[group_key] += row_count
     for op in ops:
-        owned_chains = {g[0] for g in hot_groups_by_op[op["email"]]}
-        took_unowned = sum(
-            n for g, n in buf_by_op_group[op["email"]].items()
-            if g[0] not in owned_chains
+        owned_chains = {group_key[0] for group_key in hot_groups_by_op[op["email"]]}
+        unowned_rows_taken = sum(
+            row_count
+            for group_key, row_count in buffer_rows_per_operator[op["email"]].items()
+            if group_key[0] not in owned_chains
         )
-        if took_unowned == 0:
+        if unowned_rows_taken == 0:
             continue
-        leftover_owned = sum(
-            near_by_group.get(g, 0) - taken_by_group.get(g, 0)
-            for g in near_by_group if g[0] in owned_chains
+        owned_stock_leftover = sum(
+            near_stock_per_group.get(group_key, 0) - buffer_taken_per_group.get(group_key, 0)
+            for group_key in near_stock_per_group if group_key[0] in owned_chains
         )
-        assert leftover_owned == 0, (
-            f"{op['email']} took {took_unowned} unowned buffer rows while "
-            f"{leftover_owned} rows remained in their owned chains")
+        assert owned_stock_leftover == 0, (
+            f"{op['email']} took {unowned_rows_taken} unowned buffer rows while "
+            f"{owned_stock_leftover} rows remained in their owned chains")
 
 
 def test_hot_two_cap_still_enforced():
     _, hot, _, ops, assignments, _, _ = plan_focused(WORKLOAD, SEVEN_OPS)
     hot_uids = set(hot["review_uid"])
-    per_op = defaultdict(int)
-    for a in assignments:
-        if a["review_uid"] in hot_uids:
-            per_op[a["operator_email"]] += 1
+    hot_rows_per_operator = defaultdict(int)
+    for assignment in assignments:
+        if assignment["review_uid"] in hot_uids:
+            hot_rows_per_operator[assignment["operator_email"]] += 1
     for op in ops:
-        assert per_op[op["email"]] <= op["hot_cap"] + 3, (
-            op["email"], per_op[op["email"]], op["hot_cap"])
+        assert hot_rows_per_operator[op["email"]] <= op["hot_cap"] + 3, (
+            op["email"], hot_rows_per_operator[op["email"]], op["hot_cap"])
 
 
 def test_no_hot_no_near_is_graceful():
-    plan = plan_focused([("cold", "UberEats", 300, 0)], SEVEN_OPS)
-    _, hot, near, _, assignments, buffer_assignments, _ = plan
+    _, hot, near, _, assignments, buffer_assignments, _ = plan_focused(
+        [("cold", "UberEats", 300, 0)], SEVEN_OPS)
     assert hot.empty or len(assignments) >= 0
     total = len(assignments) + len(buffer_assignments)
     assert total == len(hot) + min(
@@ -141,12 +143,12 @@ def test_unowned_buffer_stays_chain_grouped():
     # chainA holds ~192 near rows across two platforms, chainB ~48; the solo
     # operator's 150-row buffer fits inside chainA alone, so both of its
     # platforms must be drained before chainB is touched at all
-    took = defaultdict(int)
-    for a in buffer_assignments:
-        took[(a["chain_name"], a["platform"])] += 1
-    chains_touched = {g[0] for g in took}
+    rows_taken_per_group = defaultdict(int)
+    for assignment in buffer_assignments:
+        rows_taken_per_group[(assignment["chain_name"], assignment["platform"])] += 1
+    chains_touched = {group_key[0] for group_key in rows_taken_per_group}
     assert chains_touched == {"chainA"}, (
-        f"buffer scattered across chains: {dict(took)}")
+        f"buffer scattered across chains: {dict(rows_taken_per_group)}")
 
 
 if __name__ == "__main__":

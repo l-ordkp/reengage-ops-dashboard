@@ -76,43 +76,43 @@ def run_focused_assignment(full_reassign: bool = True) -> dict:
         return {"info": "No pending reviews", "assigned": 0}
 
     if not full_reassign:
-        already = fetch_already_assigned_uids()
-        pending = pending[~pending["review_uid"].isin(already)]
+        already_assigned_uids = fetch_already_assigned_uids()
+        pending = pending[~pending["review_uid"].isin(already_assigned_uids)]
         if pending.empty:
             return {"info": "All pending reviews already assigned", "assigned": 0}
 
     pending = pending.sort_values("hours_left", ascending=True)
-    hot = pending[pending["priority"].isin(HOT_PRIORITIES)]
-    near = pending[
+    hot_reviews = pending[pending["priority"].isin(HOT_PRIORITIES)]
+    near_urgent_reviews = pending[
         (pending["hours_left"] > 48)
         & (pending["hours_left"] <= NEAR_URGENT_MAX_HOURS)
     ]
 
-    if hot.empty and near.empty:
+    if hot_reviews.empty and near_urgent_reviews.empty:
         return {"info": "No hot or near-urgent reviews to assign", "assigned": 0}
 
     # Pool caps computed over the hot pool only: total cap == hot cap since
     # the pool is all-hot; the buffer is bookkept separately below.
-    ops = _build_operator_state(operators, len(hot), len(hot))
-    if hot.empty:
-        group_plan, groups = defaultdict(list), {}
+    ops = _build_operator_state(operators, len(hot_reviews), len(hot_reviews))
+    if hot_reviews.empty:
+        hot_group_plan, hot_groups = defaultdict(list), {}
     else:
-        group_plan, groups = _build_group_plan(hot, ops)
-    assignments = _materialize_assignments(ops, group_plan, groups)
+        hot_group_plan, hot_groups = _build_group_plan(hot_reviews, ops)
+    assignments = _materialize_assignments(ops, hot_group_plan, hot_groups)
 
-    buffer_plan, buffer_groups = _build_buffer_plan(ops, near)
+    buffer_plan, buffer_groups = _build_buffer_plan(ops, near_urgent_reviews)
     buffer_assignments = _materialize_assignments(ops, buffer_plan, buffer_groups)
     assignments += buffer_assignments
 
     # Invariant: every hot review must be in the insert set. This is the
     # guarantee that makes "focused" safe — nothing urgent is ever left
     # unassigned. Refuse to write a plan that violates it.
-    hot_uids = set(hot["review_uid"])
-    planned_uids = {a["review_uid"] for a in assignments}
-    missing = hot_uids - planned_uids
-    if missing:
+    hot_uids = set(hot_reviews["review_uid"])
+    planned_uids = {assignment["review_uid"] for assignment in assignments}
+    missing_hot_uids = hot_uids - planned_uids
+    if missing_hot_uids:
         return {
-            "error": f"invariant violated: {len(missing)} hot reviews unassigned",
+            "error": f"invariant violated: {len(missing_hot_uids)} hot reviews unassigned",
             "assigned": 0,
         }
 
@@ -131,11 +131,11 @@ def run_focused_assignment(full_reassign: bool = True) -> dict:
     unassigned_normals = len(pending) - len(assignments)
     summary = {
         "assigned": len(assignments),
-        "hot_assigned": len(hot),
+        "hot_assigned": len(hot_reviews),
         "buffer_assigned": len(buffer_assignments),
         "unassigned_normals": unassigned_normals,
         "operators": len(ops),
-        "groups": len(group_plan) + len(buffer_plan),
+        "groups": len(hot_group_plan) + len(buffer_plan),
         "per_operator": {
             op["email"]: {
                 "count": op["assigned_count"],
@@ -152,14 +152,14 @@ def run_focused_assignment(full_reassign: bool = True) -> dict:
         action="assign_batch", operator_email="system", performed_by="system",
         remarks=(
             f"Assigned {len(assignments)} reviews to {len(ops)} operators "
-            f"({len(hot)} hot + {len(buffer_assignments)} near-urgent buffer, "
+            f"({len(hot_reviews)} hot + {len(buffer_assignments)} near-urgent buffer, "
             f"{unassigned_normals} normals left unassigned, focused algo)"
         ),
     )
     return summary
 
 
-def _build_buffer_plan(ops: list[dict], near) -> tuple[dict, dict]:
+def _build_buffer_plan(ops: list[dict], near_urgent_reviews) -> tuple[dict, dict]:
     """Assign each operator ~NEAR_BUFFER_PER_OPERATOR near-urgent normals.
 
     Login-first selection order per operator:
@@ -168,73 +168,90 @@ def _build_buffer_plan(ops: list[dict], near) -> tuple[dict, dict]:
       2. other platforms of chains they already own — same chain, one login;
       3. unowned groups, largest remaining first, so a shortfall is covered
          with the fewest new logins.
-    Rows within a group go nearest-deadline first (groups dict is sorted by
-    hours_left, and _materialize_assignments deals in that order).
+    Rows within a group go nearest-deadline first (each group's row list is
+    sorted by hours_left, and _materialize_assignments deals in that order).
     """
-    if near.empty:
+    if near_urgent_reviews.empty:
         return defaultdict(list), {}
 
-    groups = {
+    near_groups = {
         (chain, plat): grp.sort_values("hours_left").to_dict("records")
-        for (chain, plat), grp in near.groupby(["chain_name", "platform"])
+        for (chain, plat), grp in near_urgent_reviews.groupby(["chain_name", "platform"])
     }
-    remaining = {g: len(rows) for g, rows in groups.items()}
-    plan: dict = defaultdict(list)
-    room = [max(round(NEAR_BUFFER_PER_OPERATOR * op["weight"]), 0) for op in ops]
+    stock_remaining = {
+        group_key: len(rows) for group_key, rows in near_groups.items()
+    }
+    buffer_plan: dict = defaultdict(list)
+    buffer_room = [
+        max(round(NEAR_BUFFER_PER_OPERATOR * op["weight"]), 0) for op in ops
+    ]
     # Frozen ownership snapshots: the take-loop mutates op["groups"]/["chains"]
     # (PR #31 review — a lazy filter over the live sets skipped the sibling
     # platform of a just-acquired chain).
-    owned_groups = [set(op["groups"]) for op in ops]
-    owned_chains = [set(op["chains"]) for op in ops]
+    owned_groups_per_op = [set(op["groups"]) for op in ops]
+    owned_chains_per_op = [set(op["chains"]) for op in ops]
     for op in ops:
         op["buffer_count"] = 0
 
-    def take_from(idx: int, g) -> None:
-        take = min(room[idx], remaining[g])
-        if take <= 0:
+    def assign_buffer_rows(op_idx: int, group_key) -> None:
+        take_count = min(buffer_room[op_idx], stock_remaining[group_key])
+        if take_count <= 0:
             return
-        plan[g].append((idx, take))
-        remaining[g] -= take
-        room[idx] -= take
-        op = ops[idx]
-        op["assigned_count"] += take
-        op["buffer_count"] += take
-        op["groups"].append(g)
-        op["chains"].add(g[0])
+        buffer_plan[group_key].append((op_idx, take_count))
+        stock_remaining[group_key] -= take_count
+        buffer_room[op_idx] -= take_count
+        operator = ops[op_idx]
+        operator["assigned_count"] += take_count
+        operator["buffer_count"] += take_count
+        operator["groups"].append(group_key)
+        operator["chains"].add(group_key[0])
 
     # PASS 1 — owned stock only, for EVERY operator, before anyone may touch
     # unowned groups. A single greedy pass lets early-shuffled operators raid
     # the near-urgent stock of chains that later operators own (unowned
     # selection is largest-first, which is exactly where someone else's chain
     # sits), destroying the zero-extra-login property for the later ones.
-    for idx in range(len(ops)):
-        for g in groups:
-            if g in owned_groups[idx]:
-                take_from(idx, g)
-        for g in groups:
-            if g[0] in owned_chains[idx] and g not in owned_groups[idx]:
-                take_from(idx, g)
+    for op_idx in range(len(ops)):
+        for group_key in near_groups:
+            if group_key in owned_groups_per_op[op_idx]:
+                assign_buffer_rows(op_idx, group_key)
+        for group_key in near_groups:
+            chain_name = group_key[0]
+            if (chain_name in owned_chains_per_op[op_idx]
+                    and group_key not in owned_groups_per_op[op_idx]):
+                assign_buffer_rows(op_idx, group_key)
 
     # PASS 2 — fill any leftover room from unowned stock, chain-grouped
     # (both platforms of a chain offered consecutively, biggest chain first)
     # so a shortfall costs the fewest new logins.
-    for idx in range(len(ops)):
-        if room[idx] <= 0:
+    for op_idx in range(len(ops)):
+        if buffer_room[op_idx] <= 0:
             continue
-        unowned_by_chain = defaultdict(list)
-        for g in groups:
-            if g[0] not in owned_chains[idx] and remaining[g] > 0:
-                unowned_by_chain[g[0]].append(g)
-        for chain in sorted(unowned_by_chain,
-                            key=lambda c: -sum(remaining[g] for g in unowned_by_chain[c])):
-            for g in unowned_by_chain[chain]:
-                take_from(idx, g)
-            if room[idx] <= 0:
+        unowned_groups_by_chain = defaultdict(list)
+        for group_key in near_groups:
+            if (group_key[0] not in owned_chains_per_op[op_idx]
+                    and stock_remaining[group_key] > 0):
+                unowned_groups_by_chain[group_key[0]].append(group_key)
+        chains_by_stock = sorted(
+            unowned_groups_by_chain,
+            key=lambda chain_name: -sum(
+                stock_remaining[group_key]
+                for group_key in unowned_groups_by_chain[chain_name]
+            ),
+        )
+        for chain_name in chains_by_stock:
+            for group_key in unowned_groups_by_chain[chain_name]:
+                assign_buffer_rows(op_idx, group_key)
+            if buffer_room[op_idx] <= 0:
                 break
 
-    # Trim groups to just the dealt prefix count so _materialize_assignments
-    # (which deals plan counts over the group's row list) sees consistent data.
-    dealt_groups = {
-        g: groups[g][: sum(count for _, count in plan[g])] for g in plan
+    # Trim each group's row list to just the dealt prefix so
+    # _materialize_assignments (which deals plan counts over the group's row
+    # list) sees consistent data.
+    dealt_near_groups = {
+        group_key: near_groups[group_key][
+            : sum(count for _, count in buffer_plan[group_key])
+        ]
+        for group_key in buffer_plan
     }
-    return plan, dealt_groups
+    return buffer_plan, dealt_near_groups
