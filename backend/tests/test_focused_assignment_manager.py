@@ -40,13 +40,17 @@ def plan_focused(group_specs, op_specs, seed=7):
     ops = _build_operator_state(make_operators(op_specs), len(hot), len(hot))
     group_plan, groups = _build_group_plan(hot, ops)
     assignments = _materialize_assignments(ops, group_plan, groups)
+    # snapshot BEFORE buffer planning: _build_buffer_plan appends buffer
+    # groups to op["groups"], and a group can hold both hot and buffer rows,
+    # so post-hoc subtraction would misclassify it
+    hot_groups_by_op = {op["email"]: set(op["groups"]) for op in ops}
     buffer_plan, buffer_groups = _build_buffer_plan(ops, near)
     buffer_assignments = _materialize_assignments(ops, buffer_plan, buffer_groups)
-    return pending, hot, near, ops, assignments, buffer_assignments
+    return pending, hot, near, ops, assignments, buffer_assignments, hot_groups_by_op
 
 
 def test_every_hot_review_assigned_and_nothing_far():
-    pending, hot, near, _, assignments, buffer_assignments = plan_focused(
+    pending, hot, near, _, assignments, buffer_assignments, _ = plan_focused(
         WORKLOAD, SEVEN_OPS)
     all_assigned = assignments + buffer_assignments
     uids = [a["review_uid"] for a in all_assigned]
@@ -61,7 +65,7 @@ def test_every_hot_review_assigned_and_nothing_far():
 
 
 def test_buffer_size_close_to_target_per_operator():
-    _, _, near, ops, _, _ = plan_focused(WORKLOAD, SEVEN_OPS)
+    _, _, near, ops, _, _, _ = plan_focused(WORKLOAD, SEVEN_OPS)
     for op in ops:
         assert op["buffer_count"] <= round(NEAR_BUFFER_PER_OPERATOR * op["weight"])
     total_target = sum(round(NEAR_BUFFER_PER_OPERATOR * op["weight"]) for op in ops)
@@ -70,28 +74,40 @@ def test_buffer_size_close_to_target_per_operator():
 
 
 def test_buffer_prefers_owned_chains():
-    """Operators whose hot chains have near-urgent stock must draw their
-    buffer from those chains before touching unowned ones."""
-    _, _, near, ops, _, buffer_assignments = plan_focused(WORKLOAD, SEVEN_OPS)
+    """An operator may only receive unowned buffer rows once the near-urgent
+    stock of every chain they own is fully drained. (Owned stock can be
+    contested — a split hot group gives several operators the same chain — so
+    'I had owned stock at planning time' is not a guarantee; 'nothing owned
+    was left when I went outside' is.)"""
+    _, _, near, ops, _, buffer_assignments, hot_groups_by_op = plan_focused(
+        WORKLOAD, SEVEN_OPS)
     near_by_group = near.groupby(["chain_name", "platform"]).size().to_dict()
     buf_by_op_group = defaultdict(lambda: defaultdict(int))
     for a in buffer_assignments:
         buf_by_op_group[a["operator_email"]][(a["chain_name"], a["platform"])] += 1
+    taken_by_group = defaultdict(int)
+    for per_group in buf_by_op_group.values():
+        for g, n in per_group.items():
+            taken_by_group[g] += n
     for op in ops:
-        hot_groups = {g for g in set(op["groups"])}
-        owned_stock = sum(near_by_group.get(g, 0) for g in hot_groups)
+        owned_chains = {g[0] for g in hot_groups_by_op[op["email"]]}
         took_unowned = sum(
             n for g, n in buf_by_op_group[op["email"]].items()
-            if g not in hot_groups
+            if g[0] not in owned_chains
         )
-        if owned_stock >= round(NEAR_BUFFER_PER_OPERATOR * op["weight"]):
-            assert took_unowned == 0, (
-                f"{op['email']} took {took_unowned} unowned buffer rows despite "
-                f"{owned_stock} available in owned chains")
+        if took_unowned == 0:
+            continue
+        leftover_owned = sum(
+            near_by_group.get(g, 0) - taken_by_group.get(g, 0)
+            for g in near_by_group if g[0] in owned_chains
+        )
+        assert leftover_owned == 0, (
+            f"{op['email']} took {took_unowned} unowned buffer rows while "
+            f"{leftover_owned} rows remained in their owned chains")
 
 
 def test_hot_two_cap_still_enforced():
-    _, hot, _, ops, assignments, _ = plan_focused(WORKLOAD, SEVEN_OPS)
+    _, hot, _, ops, assignments, _, _ = plan_focused(WORKLOAD, SEVEN_OPS)
     hot_uids = set(hot["review_uid"])
     per_op = defaultdict(int)
     for a in assignments:
@@ -104,11 +120,33 @@ def test_hot_two_cap_still_enforced():
 
 def test_no_hot_no_near_is_graceful():
     plan = plan_focused([("cold", "UberEats", 300, 0)], SEVEN_OPS)
-    _, hot, near, _, assignments, buffer_assignments = plan
+    _, hot, near, _, assignments, buffer_assignments, _ = plan
     assert hot.empty or len(assignments) >= 0
     total = len(assignments) + len(buffer_assignments)
     assert total == len(hot) + min(
         len(near), sum(round(NEAR_BUFFER_PER_OPERATOR * 1.0) for _ in SEVEN_OPS))
+
+
+def test_unowned_buffer_stays_chain_grouped():
+    """Regression (PR #31 review): the take-loop mutates op["chains"] while
+    candidates are being consumed; a lazy generator would skip the sibling
+    platform of a chain the operator just acquired, scattering the buffer
+    across unrelated chains. With one operator and zero hot work, the buffer
+    must come from the fewest chains possible (both platforms of the biggest
+    chain first), not one platform each of two chains."""
+    _, _, near, ops, _, buffer_assignments, _ = plan_focused(
+        [("chainA", "Doordash", 1000, 0), ("chainA", "UberEats", 1000, 0),
+         ("chainB", "Doordash", 500, 0)],
+        [("solo@x.com", 0)])
+    # chainA holds ~192 near rows across two platforms, chainB ~48; the solo
+    # operator's 150-row buffer fits inside chainA alone, so both of its
+    # platforms must be drained before chainB is touched at all
+    took = defaultdict(int)
+    for a in buffer_assignments:
+        took[(a["chain_name"], a["platform"])] += 1
+    chains_touched = {g[0] for g in took}
+    assert chains_touched == {"chainA"}, (
+        f"buffer scattered across chains: {dict(took)}")
 
 
 if __name__ == "__main__":
