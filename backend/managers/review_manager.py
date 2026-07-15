@@ -10,7 +10,7 @@ import pandas as pd
 
 from backend.clients.bq_client import bq_read
 from backend.config import (
-    TABLE_ASSIGNMENTS,
+    TABLE_ASSIGNMENTS_READ,
     TABLE_AUTOMATION_REVIEWS,
     TABLE_REVIEW_RESPONSES,
     TABLE_SLUG_AM_MAPPING,
@@ -205,7 +205,7 @@ def _search_historical_by_id(field: str, query: str) -> pd.DataFrame:
             -- OR-match handles the historical DD complaintId-as-order_id case.
             EXISTS (
                 SELECT 1
-                FROM `{TABLE_ASSIGNMENTS}` AS asgn
+                FROM `{TABLE_ASSIGNMENTS_READ}` AS asgn
                 WHERE asgn.status = 'completed'
                   AND (asgn.review_uid = COALESCE(ar.review_id, ar.order_id)
                        OR asgn.order_id = ar.order_id

@@ -11,6 +11,18 @@ TABLE_USERS       = "ops_metrics_data.reengage_dashboard_v2_users"
 TABLE_ASSIGNMENTS = "ops_metrics_data.reengage_dashboard_v2_assignments"
 TABLE_OPS_LOG     = "ops_metrics_data.reengage_dashboard_v2_ops_log"
 
+# ── Read cutover (BQ→PG migration) ────────────────────────────────────────────
+# Writes are Postgres-only (PR #32); these are the Datastream CDC mirrors of the
+# PG tables in BigQuery, used by every BQ *read* so dashboards/notifiers see the
+# live PG state without rewriting their automation_reviews joins. Both mirrors
+# are MERGE-mode (verified: one row per id, row count and max(updated_at)
+# exactly matching live PG) — no datastream_metadata dedup needed. Do NOT write
+# to these (Datastream owns them); the legacy TABLE_ASSIGNMENTS/TABLE_OPS_LOG
+# above stay only for the not-yet-ported redistribute write path and are
+# otherwise frozen as of the 2026-07-15 PG-only-writes deploy.
+TABLE_ASSIGNMENTS_READ = "pg_cdc_public.reengage_assignments"
+TABLE_OPS_LOG_READ     = "pg_cdc_public.reengage_ops_log"
+
 # ── Read-only existing tables ────────────────────────────────────────────────
 TABLE_AUTOMATION_REVIEWS   = "elt_data.automation_reviews"
 TABLE_SLUG_AM_MAPPING      = "restaurant_aggregate_metrics.slug_am_mapping"

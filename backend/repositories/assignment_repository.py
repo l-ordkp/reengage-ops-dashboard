@@ -4,7 +4,11 @@ from __future__ import annotations
 import pandas as pd
 
 from backend.clients.bq_client import bq_exec, bq_read
-from backend.config import TABLE_ASSIGNMENTS, TABLE_AUTOMATION_REVIEWS
+from backend.config import (
+    TABLE_ASSIGNMENTS,
+    TABLE_ASSIGNMENTS_READ,
+    TABLE_AUTOMATION_REVIEWS,
+)
 from backend.utils.cache import cached
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -27,7 +31,7 @@ def fetch_all_assignments_14d() -> pd.DataFrame:
     return bq_read(f"""
         SELECT assignment_id, review_uid, order_id, operator_email,
                chain_name, platform, days_left, status, assigned_at, completed_at
-        FROM `{TABLE_ASSIGNMENTS}`
+        FROM `{TABLE_ASSIGNMENTS_READ}`
         WHERE assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
           AND status != 'reassigned'
         ORDER BY assigned_at DESC
@@ -41,7 +45,7 @@ def fetch_my_pending_assignments(email: str) -> pd.DataFrame:
     return bq_read(f"""
         SELECT assignment_id, review_uid, order_id, chain_name, platform,
                days_left, status, assigned_at, completed_at
-        FROM `{TABLE_ASSIGNMENTS}`
+        FROM `{TABLE_ASSIGNMENTS_READ}`
         WHERE operator_email = '{safe_email}'
           AND status = 'pending'
           AND assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
@@ -59,7 +63,7 @@ def fetch_already_assigned_uids() -> set[str]:
     """
     df = bq_read(f"""
         SELECT DISTINCT review_uid
-        FROM `{TABLE_ASSIGNMENTS}`
+        FROM `{TABLE_ASSIGNMENTS_READ}`
         WHERE status IN ('pending', 'completed', 'auto_resolved')
           AND assigned_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
     """)
@@ -93,7 +97,7 @@ def fetch_assignments_by_ids(
         return pd.DataFrame(columns=["assignment_id", "review_uid", "order_id", "status"])
     return bq_read(f"""
         SELECT assignment_id, review_uid, order_id, status
-        FROM `{TABLE_ASSIGNMENTS}`
+        FROM `{TABLE_ASSIGNMENTS_READ}`
         WHERE {' OR '.join(where_clauses)}
     """)
 

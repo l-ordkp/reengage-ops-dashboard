@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from backend.clients.bq_client import bq_read
 from backend.clients.slack_client import post_message
-from backend.config import TABLE_ASSIGNMENTS, TABLE_AUTOMATION_REVIEWS
+from backend.config import TABLE_ASSIGNMENTS_READ, TABLE_AUTOMATION_REVIEWS
 
 
 _CHANNEL = "#reengage-bot-notifications"
@@ -38,7 +38,7 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
         ),
         first_seen AS (
             SELECT review_uid, platform, MIN(assigned_at) AS first_assigned_at
-            FROM `{TABLE_ASSIGNMENTS}`
+            FROM `{TABLE_ASSIGNMENTS_READ}`
             GROUP BY review_uid, platform
         ),
         ingested AS (
@@ -126,7 +126,7 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
                         ),
                         a.completed_at, HOUR
                     ) AS hours_left_at_reply
-                FROM `{TABLE_ASSIGNMENTS}` a
+                FROM `{TABLE_ASSIGNMENTS_READ}` a
                 LEFT JOIN recent_reviews ar ON ar.review_uid = a.review_uid
                 WHERE a.status = 'completed'
                   AND a.completed_at IS NOT NULL
@@ -147,7 +147,7 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
             -- before this notifier runs, so yesterday's deadlines are
             -- already flagged by post time.
             SELECT a.platform, COUNT(DISTINCT a.review_uid) AS expired
-            FROM `{TABLE_ASSIGNMENTS}` a
+            FROM `{TABLE_ASSIGNMENTS_READ}` a
             JOIN recent_reviews ar ON ar.review_uid = a.review_uid
             WHERE a.status = 'expired'
               AND DATE(

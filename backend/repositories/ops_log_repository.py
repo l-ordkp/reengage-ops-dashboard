@@ -6,7 +6,7 @@ import uuid
 import pandas as pd
 
 from backend.clients.bq_client import bq_exec, bq_read
-from backend.config import TABLE_OPS_LOG
+from backend.config import TABLE_OPS_LOG, TABLE_OPS_LOG_READ
 from backend.utils.cache import cached
 
 
@@ -32,9 +32,9 @@ def _validate_date(value: str) -> str:
 @cached(ttl=60)
 def fetch_recent_ops_log(limit: int = 500) -> pd.DataFrame:
     return bq_read(f"""
-        SELECT id, review_uid, platform, chain_name, action,
+        SELECT entry_id AS id, review_uid, platform, chain_name, action,
                operator_email, performed_by, remarks, processing_timestamp
-        FROM `{TABLE_OPS_LOG}`
+        FROM `{TABLE_OPS_LOG_READ}`
         ORDER BY processing_timestamp DESC
         LIMIT {limit}
     """)
@@ -57,7 +57,7 @@ def fetch_qc_log(date_from: str | None = None, date_to: str | None = None) -> pd
     where_clause = " AND ".join(where_parts)
     return bq_read(f"""
         SELECT review_uid, operator_email, remarks, processing_timestamp
-        FROM `{TABLE_OPS_LOG}`
+        FROM `{TABLE_OPS_LOG_READ}`
         WHERE {where_clause}
         ORDER BY processing_timestamp DESC
     """)
@@ -99,7 +99,7 @@ def fetch_qc_mismatches(
             automation_review.customer_name,
             REGEXP_CONTAINS(ops_log.remarks, r'resp:MISMATCH') AS resp_mismatch,
             REGEXP_CONTAINS(ops_log.remarks, r'disc:MISMATCH') AS disc_mismatch
-        FROM `{TABLE_OPS_LOG}` AS ops_log
+        FROM `{TABLE_OPS_LOG_READ}` AS ops_log
         LEFT JOIN `{TABLE_AUTOMATION_REVIEWS}` AS automation_review
             ON ops_log.review_uid = COALESCE(automation_review.review_id, automation_review.order_id)
         LEFT JOIN `{TABLE_USERS}` AS users

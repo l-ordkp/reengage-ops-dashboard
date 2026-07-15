@@ -36,7 +36,7 @@ from datetime import datetime, timedelta, timezone
 from backend.clients.bq_client import bq_read
 from backend.clients.slack_client import post_message
 from backend.config import (
-    TABLE_ASSIGNMENTS,
+    TABLE_ASSIGNMENTS_READ,
     TABLE_AUTOMATION_REVIEWS,
     TABLE_REVIEW_RESPONSE_CFG,
     TABLE_SLUG_AM_MAPPING,
@@ -85,7 +85,7 @@ def _fetch_ingested(start_date: str, end_date: str) -> list[dict]:
     sql = f"""
         WITH first_seen AS (
           SELECT review_uid, platform, MIN(assigned_at) AS first_assigned
-          FROM `{TABLE_ASSIGNMENTS}`
+          FROM `{TABLE_ASSIGNMENTS_READ}`
           GROUP BY review_uid, platform
         )
         SELECT platform, COUNT(*) AS total
@@ -102,7 +102,7 @@ def _fetch_solved(start_date: str, end_date: str) -> list[dict]:
     [{platform, total}]."""
     sql = f"""
         SELECT platform, COUNT(DISTINCT COALESCE(review_uid, order_id)) AS total
-        FROM `{TABLE_ASSIGNMENTS}`
+        FROM `{TABLE_ASSIGNMENTS_READ}`
         WHERE status='completed' AND completed_at IS NOT NULL
           AND DATE(completed_at, 'Asia/Kolkata') BETWEEN DATE '{start_date}' AND DATE '{end_date}'
           AND NOT IFNULL(observed_out_of_window, FALSE)
@@ -119,20 +119,20 @@ def _fetch_expired(start_date: str, end_date: str) -> list[dict]:
         WITH
         auto_res AS (
           SELECT DISTINCT key FROM (
-            SELECT review_uid AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status='auto_resolved'
-            UNION ALL SELECT order_id AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status='auto_resolved' AND order_id IS NOT NULL
+            SELECT review_uid AS key FROM `{TABLE_ASSIGNMENTS_READ}` WHERE status='auto_resolved'
+            UNION ALL SELECT order_id AS key FROM `{TABLE_ASSIGNMENTS_READ}` WHERE status='auto_resolved' AND order_id IS NOT NULL
           )
         ),
         loop_done AS (
           SELECT key, MIN(completed_at) AS completed_at FROM (
-            SELECT review_uid AS key, completed_at FROM `{TABLE_ASSIGNMENTS}` WHERE status='completed' AND completed_at IS NOT NULL
-            UNION ALL SELECT order_id AS key, completed_at FROM `{TABLE_ASSIGNMENTS}` WHERE status='completed' AND completed_at IS NOT NULL AND order_id IS NOT NULL
+            SELECT review_uid AS key, completed_at FROM `{TABLE_ASSIGNMENTS_READ}` WHERE status='completed' AND completed_at IS NOT NULL
+            UNION ALL SELECT order_id AS key, completed_at FROM `{TABLE_ASSIGNMENTS_READ}` WHERE status='completed' AND completed_at IS NOT NULL AND order_id IS NOT NULL
           ) GROUP BY key
         ),
         asg_first AS (
           SELECT key, MIN(assigned_at) AS first_assigned FROM (
-            SELECT review_uid AS key, assigned_at FROM `{TABLE_ASSIGNMENTS}`
-            UNION ALL SELECT order_id AS key, assigned_at FROM `{TABLE_ASSIGNMENTS}` WHERE order_id IS NOT NULL
+            SELECT review_uid AS key, assigned_at FROM `{TABLE_ASSIGNMENTS_READ}`
+            UNION ALL SELECT order_id AS key, assigned_at FROM `{TABLE_ASSIGNMENTS_READ}` WHERE order_id IS NOT NULL
           ) GROUP BY key
         ),
         base AS (

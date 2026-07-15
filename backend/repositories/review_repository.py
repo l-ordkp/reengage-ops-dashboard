@@ -15,7 +15,7 @@ from backend.config import (
     TABLE_REVIEW_RESPONSES,
     TABLE_REVIEW_RESPONSE_CFG,
     TABLE_SLUG_AM_MAPPING,
-    TABLE_ASSIGNMENTS,
+    TABLE_ASSIGNMENTS_READ,
 )
 from backend.utils.cache import cached
 
@@ -152,7 +152,7 @@ def fetch_reviews_14d() -> pd.DataFrame:
         FROM reviews_with_response
         LEFT JOIN (
             SELECT review_uid, status
-            FROM `{TABLE_ASSIGNMENTS}`
+            FROM `{TABLE_ASSIGNMENTS_READ}`
             WHERE status IN ('completed', 'auto_resolved')
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY review_uid
@@ -251,11 +251,11 @@ def fetch_chain_totals_14d() -> pd.DataFrame:
     Matching on (order_id OR review_id) also catches the historical DoorDash
     rows where the extension passed `complaintId` (= review_id) as `order_id`.
     """
-    from backend.config import TABLE_ASSIGNMENTS
+    from backend.config import TABLE_ASSIGNMENTS_READ
     return bq_read(f"""
         WITH loop_completed AS (
             SELECT DISTINCT order_id AS completed_id
-            FROM `{TABLE_ASSIGNMENTS}`
+            FROM `{TABLE_ASSIGNMENTS_READ}`
             WHERE status = 'completed'
         )
         SELECT
@@ -341,7 +341,7 @@ def fetch_chain_value(
     return bq_read(f"""
     WITH loop_completed AS (
       SELECT DISTINCT order_id AS completed_id
-      FROM `{TABLE_ASSIGNMENTS}`
+      FROM `{TABLE_ASSIGNMENTS_READ}`
       WHERE status = 'completed'
     ),
     deduped_reviews AS (
@@ -439,7 +439,7 @@ def fetch_flow_activity_7d(period_days: int = 7) -> dict:
     ingested_sql = f"""
         WITH first_seen AS (
           SELECT review_uid, platform, MIN(assigned_at) AS first_assigned
-          FROM `{TABLE_ASSIGNMENTS}`
+          FROM `{TABLE_ASSIGNMENTS_READ}`
           GROUP BY review_uid, platform
         )
         SELECT platform, COUNT(*) AS total
@@ -451,7 +451,7 @@ def fetch_flow_activity_7d(period_days: int = 7) -> dict:
     # to non-paused chains), matching the daily/weekly notifiers. Independent count.
     solved_sql = f"""
         SELECT platform, COUNT(DISTINCT COALESCE(review_uid, order_id)) AS total
-        FROM `{TABLE_ASSIGNMENTS}`
+        FROM `{TABLE_ASSIGNMENTS_READ}`
         WHERE status='completed' AND completed_at IS NOT NULL
           AND DATE(completed_at, 'Asia/Kolkata') BETWEEN DATE '{start_date}' AND DATE '{end_date}'
           AND NOT IFNULL(observed_out_of_window, FALSE)
@@ -463,14 +463,14 @@ def fetch_flow_activity_7d(period_days: int = 7) -> dict:
         WITH
         auto_res AS (
           SELECT DISTINCT key FROM (
-            SELECT review_uid AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status='auto_resolved'
-            UNION ALL SELECT order_id AS key FROM `{TABLE_ASSIGNMENTS}` WHERE status='auto_resolved' AND order_id IS NOT NULL
+            SELECT review_uid AS key FROM `{TABLE_ASSIGNMENTS_READ}` WHERE status='auto_resolved'
+            UNION ALL SELECT order_id AS key FROM `{TABLE_ASSIGNMENTS_READ}` WHERE status='auto_resolved' AND order_id IS NOT NULL
           )
         ),
         loop_done AS (
           SELECT key, MIN(completed_at) AS completed_at FROM (
-            SELECT review_uid AS key, completed_at FROM `{TABLE_ASSIGNMENTS}` WHERE status='completed' AND completed_at IS NOT NULL
-            UNION ALL SELECT order_id AS key, completed_at FROM `{TABLE_ASSIGNMENTS}` WHERE status='completed' AND completed_at IS NOT NULL AND order_id IS NOT NULL
+            SELECT review_uid AS key, completed_at FROM `{TABLE_ASSIGNMENTS_READ}` WHERE status='completed' AND completed_at IS NOT NULL
+            UNION ALL SELECT order_id AS key, completed_at FROM `{TABLE_ASSIGNMENTS_READ}` WHERE status='completed' AND completed_at IS NOT NULL AND order_id IS NOT NULL
           ) GROUP BY key
         ),
         base AS (
