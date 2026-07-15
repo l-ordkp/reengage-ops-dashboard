@@ -69,10 +69,11 @@ def mark_completed(
     platform_reply_id: str = "", platform_coupon_id: str = "",
 ) -> None:
     """Flip an existing pending row to completed; if none exists, insert a
-    completed row — and if a terminal row already exists, promote/keep it (an
-    auto_resolved sibling, operator_email='', is promoted to the submitter; a
-    real completed row's operator is left intact). The terminal partial unique
-    index guarantees at most one terminal row per review."""
+    completed row — and if a terminal row already exists: an auto_resolved
+    sibling is promoted to the submitter's completed row, while a row that is
+    already completed is left ENTIRELY untouched (idempotent — retries must not
+    move completed_at or clear observed_out_of_window). The terminal partial
+    unique index guarantees at most one terminal row per review."""
     ck = _canonical(review_uid, order_id)
     if not ck:
         return
@@ -115,14 +116,18 @@ def mark_completed(
                         completed_at = :now,
                         updated_at = :now,
                         observed_out_of_window = FALSE,
-                        -- promote auto_resolved (operator '') to the submitter;
-                        -- keep a real completed row's operator untouched.
-                        operator_email = CASE
-                            WHEN reengage_assignments.operator_email = ''
-                            THEN EXCLUDED.operator_email
-                            ELSE reengage_assignments.operator_email END,
+                        operator_email = EXCLUDED.operator_email,
                         platform_reply_id  = COALESCE(EXCLUDED.platform_reply_id,  reengage_assignments.platform_reply_id),
                         platform_coupon_id = COALESCE(EXCLUDED.platform_coupon_id, reengage_assignments.platform_coupon_id)
+                    -- Promotion only: an auto_resolved row becomes this submit's
+                    -- completed row, stamped with the submitter. A row that is
+                    -- ALREADY completed is left untouched (no-op), so an
+                    -- extension outbox retry of a mark whose 200 was lost can't
+                    -- bump completed_at (shifting the reply's counted IST day)
+                    -- or clear a legitimate observed_out_of_window=TRUE.
+                    -- Matches the old BQ promote_auto_resolved_to_completed's
+                    -- NOT-EXISTS guard.
+                    WHERE reengage_assignments.status = 'auto_resolved'
                 """),
                 {"aid": str(uuid.uuid4()), "review_uid": review_uid or "",
                  "order_id": order_id, "operator_email": operator_email,
