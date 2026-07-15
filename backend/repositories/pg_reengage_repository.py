@@ -367,9 +367,18 @@ def fetch_already_assigned_uids() -> set[str]:
     NOTE: window is a rolling `now() - 14 days` vs the BQ version's midnight-
     aligned `CURRENT_DATE - 14`; slightly more inclusive (skips marginally more
     UIDs), which is the safe direction for a dedup gate.
-    REQUIRES: PG must hold >=14 days of assignment history before this is used
-    as the cron dedup gate — otherwise reviews present only in BQ are re-ingested
-    and re-assigned (duplicate pending rows). Backfill BQ->PG before cutover."""
+
+    SCOPE: this is called ONLY on `full_reassign=False` runs
+    (assignment_manager.py:93 / focused_assignment_manager.py:70). The scheduled
+    8 AM cron POSTs `{"full_reassign": true}`, which voids all pending and
+    rebuilds the queue from `fetch_reviews_14d()` (BigQuery) WITHOUT calling this
+    — so the scheduled cron does not depend on PG assignment history at all.
+
+    REQUIRES (only for a manual `full_reassign=False` trigger): PG must hold
+    >=14 days of assignment history, else reviews present only in BQ are
+    re-ingested and re-assigned (duplicate pending rows, since insert_pending's
+    ON CONFLICT is on the fresh-uuid assignment_id, not review_uid). Backfill
+    BQ->PG before relying on this path or before flipping the cron default."""
     def work(session: Session):
         return session.execute(
             text("""
