@@ -111,18 +111,22 @@ def mark_responded(
         match_d = "exact" if exact_match_discount else "MISMATCH"
         qc_info = f"{platform_short}|resp:{match_r}|disc:{match_d}"
 
-    # Record the reply in Postgres (authoritative): one audit row, then
-    # flip/insert the assignment to completed. mark_completed carries the
-    # platform reply/coupon IDs and handles the pending-flip, fresh-insert, and
-    # auto_resolved-promotion cases against the terminal-uniqueness guard.
-    log_action(
-        review_uid, platform, chain_name, "mark_responded",
-        operator_email, operator_email, qc_info,
-    )
+    # Record the reply in Postgres (authoritative). STATE before AUDIT: flip/
+    # insert the completed assignment first, then write the audit row — matching
+    # observed_responded. If we logged the audit first and the state write then
+    # failed, the audit would claim a reply that isn't recorded (and a retry
+    # would duplicate the audit, since reengage_ops_log has no dedup).
+    # mark_completed carries the platform reply/coupon IDs and handles the
+    # pending-flip, fresh-insert, and auto_resolved-promotion cases against the
+    # terminal-uniqueness guard.
     mark_completed(
         review_uid=review_uid, order_id=order_id, operator_email=operator_email,
         platform=platform, chain_name=chain_name,
         platform_reply_id=platform_reply_id, platform_coupon_id=platform_coupon_id,
+    )
+    log_action(
+        review_uid, platform, chain_name, "mark_responded",
+        operator_email, operator_email, qc_info,
     )
 
     return {

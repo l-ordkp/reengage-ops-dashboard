@@ -362,7 +362,14 @@ def fetch_already_assigned_uids() -> set[str]:
     """UIDs the cron should skip re-ingesting: reviews with a pending / completed
     / auto_resolved row in the last 14 days. PG-native replacement for the BQ
     version (reads must be fresh, so this hits Postgres directly, not the CDC
-    mirror)."""
+    mirror).
+
+    NOTE: window is a rolling `now() - 14 days` vs the BQ version's midnight-
+    aligned `CURRENT_DATE - 14`; slightly more inclusive (skips marginally more
+    UIDs), which is the safe direction for a dedup gate.
+    REQUIRES: PG must hold >=14 days of assignment history before this is used
+    as the cron dedup gate — otherwise reviews present only in BQ are re-ingested
+    and re-assigned (duplicate pending rows). Backfill BQ->PG before cutover."""
     def work(session: Session):
         return session.execute(
             text("""
