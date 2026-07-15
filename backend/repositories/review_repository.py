@@ -251,7 +251,6 @@ def fetch_chain_totals_14d() -> pd.DataFrame:
     Matching on (order_id OR review_id) also catches the historical DoorDash
     rows where the extension passed `complaintId` (= review_id) as `order_id`.
     """
-    from backend.config import TABLE_ASSIGNMENTS_READ
     return bq_read(f"""
         WITH loop_completed AS (
             SELECT DISTINCT order_id AS completed_id

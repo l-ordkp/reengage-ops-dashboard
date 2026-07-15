@@ -438,3 +438,106 @@ def fetch_already_assigned_uids() -> set[str]:
                 session.close()
             except Exception:
                 pass
+
+
+def redistribute_pending_for_removed_operator(
+    removed_email: str, operator_emails: list[str],
+) -> int:
+    """Reassign a removed operator's pending rows to the given operators.
+
+    PG port of the legacy BQ redistribute — the chain/platform-affinity
+    balancing is unchanged: reviews go first to operators already working
+    that (chain, platform), least-loaded first, round-robin within a combo.
+    The caller supplies the candidate operators (the users table stays on
+    BigQuery) with the removed email already excluded.
+
+    Orphan read + reassignment UPDATE run in ONE transaction and raise on
+    failure, so remove_user aborts instead of deleting the user while their
+    queue is still assigned to them. Returns the number of reviews moved.
+    """
+    from collections import defaultdict
+
+    operators = [op for op in operator_emails if op and op != removed_email]
+    if not operators:
+        return 0
+    now = datetime.now(timezone.utc)
+    session = None
+    try:
+        session = get_pg_session()
+        orphaned = session.execute(
+            text("""
+                SELECT assignment_id, chain_name, platform
+                FROM reengage_assignments
+                WHERE operator_email = :removed AND status = 'pending'
+                -- NULLS FIRST matches BigQuery's ASC ordering, which the
+                -- legacy version relied on for its urgency order.
+                ORDER BY days_left ASC NULLS FIRST
+            """),
+            {"removed": removed_email},
+        ).fetchall()
+        if not orphaned:
+            return 0
+
+        existing = session.execute(
+            text("""
+                SELECT operator_email, chain_name, platform
+                FROM reengage_assignments
+                WHERE status = 'pending' AND operator_email != :removed
+            """),
+            {"removed": removed_email},
+        ).fetchall()
+
+        combos_per_operator: dict[str, set] = defaultdict(set)
+        counts_per_operator: dict[str, int] = defaultdict(int)
+        for op_email, chain, platform in existing:
+            combos_per_operator[op_email].add((chain, platform))
+            counts_per_operator[op_email] += 1
+        for op in operators:
+            combos_per_operator.setdefault(op, set())
+            counts_per_operator.setdefault(op, 0)
+
+        reviews_by_combo: dict[tuple, list] = defaultdict(list)
+        for assignment_id, chain, platform in orphaned:
+            reviews_by_combo[(chain, platform)].append(assignment_id)
+
+        aids_by_target: dict[str, list[str]] = defaultdict(list)
+        for (chain, platform), aids in reviews_by_combo.items():
+            with_combo = [op for op in operators
+                          if (chain, platform) in combos_per_operator[op]]
+            without_combo = [op for op in operators
+                             if (chain, platform) not in combos_per_operator[op]]
+            with_combo.sort(key=lambda op: counts_per_operator[op])
+            without_combo.sort(
+                key=lambda op: (len(combos_per_operator[op]), counts_per_operator[op]))
+            preferred = with_combo + without_combo
+            for i, aid in enumerate(aids):
+                target = preferred[i % len(preferred)]
+                aids_by_target[target].append(aid)
+                counts_per_operator[target] += 1
+                combos_per_operator[target].add((chain, platform))
+
+        for target, aids in aids_by_target.items():
+            session.execute(
+                text("""
+                    UPDATE reengage_assignments
+                    SET operator_email = :target, assigned_at = :now, updated_at = :now
+                    WHERE assignment_id = ANY(:aids) AND status = 'pending'
+                """),
+                {"target": target, "now": now, "aids": aids},
+            )
+        session.commit()
+        return len(orphaned)
+    except Exception:
+        if session is not None:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+        logger.exception("redistribute_pending_for_removed_operator failed")
+        raise
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass

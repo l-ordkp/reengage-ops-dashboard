@@ -41,12 +41,20 @@ def remove_user(email: str, performed_by: str) -> None:
     Redistribute pending assignments to other operators, delete the user,
     and write an audit row to ops_log so the redistribution is traceable.
     """
-    from backend.repositories.assignment_repository import (
-        redistribute_assignments_for_removed_operator,
+    from backend.repositories.pg_reengage_repository import (
+        log_action,
+        redistribute_pending_for_removed_operator,
     )
-    from backend.repositories.pg_reengage_repository import log_action
+    from backend.repositories.user_repository import fetch_approved_operators
 
-    n_redistributed = redistribute_assignments_for_removed_operator(email)
+    operators_df = fetch_approved_operators()
+    candidate_operators = (
+        [e for e in operators_df["email"].tolist() if e != email]
+        if not operators_df.empty else []
+    )
+    n_redistributed = redistribute_pending_for_removed_operator(
+        email, candidate_operators,
+    )
     repo_delete_user(email)
     log_action(
         review_uid="batch", platform="all", chain_name="all",
