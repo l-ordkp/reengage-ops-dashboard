@@ -11,7 +11,6 @@ from fastapi import HTTPException
 
 from backend.repositories.assignment_repository import (
     fetch_assignments_by_ids,
-    mark_is_loop_replied,
 )
 from backend.repositories.extension_repository import (
     fetch_loop_usernames_for_stores,
@@ -95,8 +94,8 @@ def mark_responded(
         raise HTTPException(status_code=400, detail="Invalid order_id")
 
     # DoorDash extension passes `complaintId` (= review_id) as `order_id`.
-    # Resolve to the canonical automation_reviews.order_id so downstream
-    # updates (mark_is_loop_replied / assignment lookup) actually match.
+    # Resolve to the canonical automation_reviews.order_id so the downstream
+    # review_uid lookup and completed-assignment write actually match.
     canonical_order_id = resolve_canonical_order_id(order_id)
     if canonical_order_id:
         order_id = canonical_order_id
