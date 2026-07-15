@@ -133,6 +133,41 @@ def mark_completed(
     _write("mark_completed", work)
 
 
+def mark_completed_by_assignment_id(assignment_id: str) -> None:
+    """Flip one assignment row to completed by its assignment_id (the dashboard
+    queue's manual "mark complete" — POST /api/assignments/{id}/complete).
+
+    The BQ version updated unconditionally; here two guards keep the terminal
+    invariant and make retries no-ops:
+      * skip if the row is already terminal (idempotent — a retry must not bump
+        completed_at or the OOW flag);
+      * skip if a SIBLING row for the same review already holds the terminal
+        slot (flipping would violate uq_reengage_assignment_terminal) — the
+        review is already recorded as replied, so there's nothing to do.
+    Like the BQ version, non-pending rows (expired/reassigned) may still be
+    flipped: an operator completing a stale queue entry is real work.
+    """
+    now = datetime.now(timezone.utc)
+
+    def work(session: Session) -> None:
+        session.execute(
+            text("""
+                UPDATE reengage_assignments r
+                SET status = 'completed', completed_at = :now, updated_at = :now
+                WHERE r.assignment_id = :aid
+                  AND r.status NOT IN ('completed', 'auto_resolved')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM reengage_assignments x
+                    WHERE x.canonical_review_key = r.canonical_review_key
+                      AND x.status IN ('completed', 'auto_resolved')
+                  )
+            """),
+            {"aid": assignment_id, "now": now},
+        )
+
+    _write("mark_completed_by_assignment_id", work)
+
+
 def write_observed(items: list[dict]) -> None:
     """observed_responded's assignment writes.
 
