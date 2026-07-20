@@ -362,13 +362,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // host_permissions and are exempt from CORS entirely.
   if (message.type === "FETCH_OTP") {
     const { url } = message;
-    let host;
-    try { host = new URL(url).hostname; } catch (e) { host = null; }
-    if (host !== "internal.loopapplication.xyz") {
-      sendResponse({ success: false, error: `FETCH_OTP host not allowed: ${host}` });
+    let parsedUrl;
+    try { parsedUrl = new URL(url); } catch (e) { parsedUrl = null; }
+    if (!parsedUrl || parsedUrl.protocol !== "https:" || parsedUrl.hostname !== "internal.loopapplication.xyz") {
+      sendResponse({ success: false, error: "FETCH_OTP url or protocol not allowed" });
       return true;
     }
-    fetch(url)
+    fetch(parsedUrl.href)
       .then(resp => resp.text().then(text => ({ ok: resp.ok, status: resp.status, text })))
       .then(({ ok, status, text }) => {
         if (!ok) {
