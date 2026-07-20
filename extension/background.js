@@ -355,6 +355,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Relay OTP fetches from login.js content scripts. Content-script fetches
+  // carry the merchant portal's Origin (identity.doordash.com / auth.uber.com),
+  // which the backend's CORS allowlist rejects since the Jul 2026 Scrut VAPT
+  // fix (backend PR #16726). Background-worker fetches use the extension's
+  // host_permissions and are exempt from CORS entirely.
+  if (message.type === "FETCH_OTP") {
+    const { url } = message;
+    let host;
+    try { host = new URL(url).hostname; } catch (e) { host = null; }
+    if (host !== "internal.loopapplication.xyz") {
+      sendResponse({ success: false, error: `FETCH_OTP host not allowed: ${host}` });
+      return true;
+    }
+    fetch(url)
+      .then(resp => resp.text().then(text => ({ ok: resp.ok, status: resp.status, text })))
+      .then(({ ok, status, text }) => {
+        if (!ok) {
+          sendResponse({ success: false, error: `HTTP ${status}: ${text.slice(0, 200)}` });
+        } else {
+          sendResponse({ success: true, text });
+        }
+      })
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   // Lookup AI response from Cloud Run
   if (message.type === "FETCH_RESPONSE") {
     const { orderId } = message;

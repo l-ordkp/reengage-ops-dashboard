@@ -297,12 +297,16 @@ function simulateClick(element) {
 }
 
 async function fetchOtp(url) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    console.error("[ReEngage Login] OTP fetch failed");
-    throw new Error("OTP fetch failed");
+  // Must go through the background worker: a direct fetch from this content
+  // script carries the merchant portal's Origin, which the OTP backend's CORS
+  // allowlist rejects (backend PR #16726). The worker's host_permissions
+  // exempt it from CORS.
+  const response = await chrome.runtime.sendMessage({ type: "FETCH_OTP", url });
+  if (!response || !response.success) {
+    console.error("[ReEngage Login] OTP fetch failed:", response && response.error);
+    throw new Error(`OTP fetch failed: ${response ? response.error : "no response from background"}`);
   }
-  return await response.text();
+  return response.text;
 }
 
 function sleep(ms) {
