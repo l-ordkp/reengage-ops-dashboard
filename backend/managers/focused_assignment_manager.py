@@ -19,7 +19,6 @@ the existing modules, not reimplemented.
 """
 from __future__ import annotations
 
-import logging
 import os
 from collections import defaultdict
 
@@ -29,13 +28,12 @@ from backend.managers.assignment_manager import (
     _build_operator_state,
     _materialize_assignments,
 )
+from backend.managers.first_seen_gate import record_first_seen_reviews
 from backend.repositories.pg_reengage_repository import (
     expire_pending,
     fetch_already_assigned_uids,
-    fetch_first_seen_uids,
     insert_pending,
     log_action,
-    record_first_seen,
     void_pending,
 )
 from backend.repositories.review_repository import fetch_reviews_14d
@@ -46,34 +44,6 @@ from backend.repositories.user_repository import fetch_approved_operators
 # for new operators) on top of their hot share.
 NEAR_URGENT_MAX_HOURS = 72
 NEAR_BUFFER_PER_OPERATOR = int(os.getenv("NEAR_BUFFER_PER_OPERATOR", "150"))
-
-
-def _record_first_seen(reviews) -> int:
-    """First-seen ledger gate: record every scoped review the system has never
-    seen before as an action='first_seen' ops_log row. This is the 'ingested'
-    metric's source of truth — the day a review first passes scoping — and is
-    deliberately independent of assignment decisions (far normals are counted
-    on arrival even though they are not assigned).
-
-    Counts ALL scoped reviews regardless of status: a review that arrives
-    already replied or expired still 'came into the system'.
-
-    FAIL-OPEN: a ledger failure must never block assignment. Errors are logged
-    and swallowed; unrecorded reviews are still in tomorrow's pool, so they get
-    counted a day late rather than lost. Idempotent per run (dedup lookup), so
-    the leads' manual re-runs write ~0 extra rows."""
-    try:
-        candidates = reviews[["review_uid", "platform", "chain_name"]].drop_duplicates(
-            "review_uid")
-        candidate_uids = candidates["review_uid"].tolist()
-        seen_uids = fetch_first_seen_uids(candidate_uids)
-        new_rows = candidates[~candidates["review_uid"].isin(seen_uids)]
-        record_first_seen(new_rows.to_dict("records"))
-        return len(new_rows)
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "first_seen ledger gate failed; continuing with assignment")
-        return -1
 
 
 def run_focused_assignment(full_reassign: bool = True) -> dict:
@@ -94,7 +64,7 @@ def run_focused_assignment(full_reassign: bool = True) -> dict:
     if reviews.empty:
         return {"info": "No reviews to assign", "assigned": 0}
 
-    first_seen_recorded = _record_first_seen(reviews)
+    first_seen_recorded = record_first_seen_reviews(reviews)
 
     pending = reviews[reviews["status"] == "PENDING"].copy()
     if pending.empty:

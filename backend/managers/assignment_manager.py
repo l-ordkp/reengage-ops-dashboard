@@ -26,6 +26,7 @@ from datetime import timedelta
 
 import pandas as pd
 
+from backend.managers.first_seen_gate import record_first_seen_reviews
 from backend.repositories.pg_reengage_repository import (
     expire_pending,
     fetch_already_assigned_uids,
@@ -85,6 +86,10 @@ def run_assignment(full_reassign: bool = True) -> dict:
         return {"error": "No approved operators found", "assigned": 0}
     if reviews.empty:
         return {"info": "No reviews to assign", "assigned": 0}
+
+    # First-seen ledger gate: the ingested metric's write path must run
+    # regardless of FOCUSED_ASSIGNMENT_MODE (fail-open; see first_seen_gate).
+    record_first_seen_reviews(reviews)
 
     pending = reviews[reviews["status"] == "PENDING"].copy()
     if pending.empty:

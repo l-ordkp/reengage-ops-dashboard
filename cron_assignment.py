@@ -8,12 +8,21 @@ Can be run as:
 import json
 import sys
 
+from backend.config import FOCUSED_ASSIGNMENT_MODE
 from backend.managers.assignment_manager import run_assignment
+from backend.managers.focused_assignment_manager import run_focused_assignment
 from backend.managers.throughput_notifier import send_yesterday_throughput
 
 
 def main():
-    result = run_assignment()
+    # Honor the same dispatch as /api/system/run-assignment so this entrypoint
+    # can never silently run a different algorithm than the HTTP path
+    # (PR #36 review). NOTE: the live Cloud Scheduler POSTs the HTTP endpoint;
+    # this script is a standby entrypoint.
+    if FOCUSED_ASSIGNMENT_MODE:
+        result = run_focused_assignment()
+    else:
+        result = run_assignment()
     print(json.dumps(result, indent=2, default=str))
 
     if "error" in result:

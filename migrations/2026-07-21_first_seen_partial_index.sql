@@ -7,7 +7,10 @@
 -- reengage_ops_log (~10k new rows/day across all actions) — the query's
 -- 20-day time bound limits what MATCHES, not what gets READ.
 --
--- Partial index: covers only action='first_seen' rows, so it stays small
+-- UNIQUE partial index: one first_seen row per review, structurally — the
+-- writer's ON CONFLICT DO NOTHING turns the concurrent-run race from
+-- "benign duplicate guarded by MIN() at read time" into "impossible"
+-- (PR #36 review). Covers only action='first_seen' rows, so it stays small
 -- (one entry per review ever seen, ~5k/day) and turns the lookup into pure
 -- index probes regardless of how large the audit log grows.
 --
@@ -16,6 +19,6 @@
 -- Idempotent via IF NOT EXISTS.
 -- ============================================================================
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_reengage_ops_log_first_seen_uid
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_reengage_ops_log_first_seen_uid
     ON reengage_ops_log (review_uid)
     WHERE action = 'first_seen';
