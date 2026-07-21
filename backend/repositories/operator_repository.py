@@ -152,6 +152,13 @@ def fetch_daily_ingested_14d() -> pd.DataFrame:
             SELECT review_uid, MIN(processing_timestamp) AS first_seen_at
             FROM `{TABLE_OPS_LOG_READ}`
             WHERE action = 'first_seen'
+              -- Bounds aggregation input; safe because duplicate first_seen
+              -- rows >20 days apart are structurally impossible (a review can
+              -- only re-enter the pool within its 14-day window). NOTE: the
+              -- mirror is clustered by id, not time-partitioned, so this does
+              -- NOT reduce scanned bytes today - it future-proofs for
+              -- partitioning and trims the GROUP BY.
+              AND processing_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 20 DAY)
             GROUP BY review_uid
         ),
         ingested AS (

@@ -88,7 +88,7 @@ def phase1_pre_focused(session, already: set[str], dry_run: bool) -> int:
                MIN(chain_name) AS chain_name
         FROM reengage_assignments
         GROUP BY review_uid
-        HAVING MIN(assigned_at) < TIMESTAMP '{FOCUSED_CUTOVER_IST_DATE} 00:00:00+05:30'
+        HAVING MIN(assigned_at) < TIMESTAMPTZ '{FOCUSED_CUTOVER_IST_DATE} 00:00:00+05:30'
     """)).fetchall()
     to_insert = [{
         "review_uid": r.review_uid,
@@ -106,7 +106,7 @@ def phase2_snapshot_csvs(session, already: set[str], dry_run: bool) -> int:
     """Time-travel capture CSVs: exact per-day arrivals for the focused era."""
     total = 0
     for csv_path in sorted(CSV_DIR.glob("day_*.csv")):
-        with open(csv_path) as f:
+        with open(csv_path, encoding="utf-8") as f:
             to_insert = []
             for record in csv.DictReader(f):
                 uid = record["review_uid"]
@@ -138,7 +138,7 @@ def phase3_focused_era_remainder(session, already: set[str], dry_run: bool) -> i
                MIN(chain_name) AS chain_name
         FROM reengage_assignments
         GROUP BY review_uid
-        HAVING MIN(assigned_at) >= TIMESTAMP '{FOCUSED_CUTOVER_IST_DATE} 00:00:00+05:30'
+        HAVING MIN(assigned_at) >= TIMESTAMPTZ '{FOCUSED_CUTOVER_IST_DATE} 00:00:00+05:30'
     """)).fetchall()
     to_insert = [{
         "review_uid": r.review_uid,

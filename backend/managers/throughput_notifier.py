@@ -43,6 +43,12 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
             SELECT review_uid, platform, MIN(processing_timestamp) AS first_seen_at
             FROM `{TABLE_OPS_LOG_READ}`
             WHERE action = 'first_seen'
+              -- Bounded window (same caveat as fetch_daily_ingested_14d: the
+              -- mirror is unpartitioned, this trims aggregation input, not
+              -- scanned bytes). 2-day slack on each side covers timezone
+              -- rounding and late gate runs.
+              AND processing_timestamp >= TIMESTAMP_SUB(TIMESTAMP('{target_date}'), INTERVAL 2 DAY)
+              AND processing_timestamp <= TIMESTAMP_ADD(TIMESTAMP('{target_date}'), INTERVAL 2 DAY)
             GROUP BY review_uid, platform
         ),
         ingested AS (
