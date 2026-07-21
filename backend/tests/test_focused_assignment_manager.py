@@ -151,6 +151,76 @@ def test_unowned_buffer_stays_chain_grouped():
         f"buffer scattered across chains: {dict(rows_taken_per_group)}")
 
 
+def _gate_reviews_df():
+    import pandas as pd
+    return pd.DataFrame([
+        {"review_uid": "u1", "platform": "Doordash", "chain_name": "daves", "status": "PENDING"},
+        {"review_uid": "u2", "platform": "UberEats", "chain_name": "daves", "status": "RESPONDED"},
+        {"review_uid": "u3", "platform": "Doordash", "chain_name": "pizza", "status": "EXPIRED"},
+        {"review_uid": "u4", "platform": "UberEats", "chain_name": "pizza", "status": "PENDING"},
+        {"review_uid": "u4", "platform": "UberEats", "chain_name": "pizza", "status": "PENDING"},
+    ])
+
+
+def test_first_seen_gate_records_only_unseen_across_all_statuses(monkeypatch=None):
+    """The gate counts every scoped review regardless of status (arrival is
+    arrival, even if already replied or expired), dedupes against the ledger,
+    and dedupes repeated uids within the pool."""
+    import backend.managers.focused_assignment_manager as fam
+    recorded = []
+    orig_fetch, orig_record = fam.fetch_first_seen_uids, fam.record_first_seen
+    fam.fetch_first_seen_uids = lambda uids: {"u1"}
+    fam.record_first_seen = lambda rows: recorded.extend(rows)
+    try:
+        recorded_count = fam._record_first_seen(_gate_reviews_df())
+    finally:
+        fam.fetch_first_seen_uids, fam.record_first_seen = orig_fetch, orig_record
+    recorded_uids = {row["review_uid"] for row in recorded}
+    assert recorded_count == 3
+    assert recorded_uids == {"u2", "u3", "u4"}, recorded_uids
+    assert all(row["platform"] and row["chain_name"] for row in recorded)
+
+
+def test_first_seen_gate_fails_open():
+    """A ledger failure must never block assignment: the gate logs, returns
+    -1, and raises nothing."""
+    import backend.managers.focused_assignment_manager as fam
+
+    def exploding_fetch(uids):
+        raise RuntimeError("pg down")
+
+    orig_fetch = fam.fetch_first_seen_uids
+    fam.fetch_first_seen_uids = exploding_fetch
+    try:
+        recorded_count = fam._record_first_seen(_gate_reviews_df())
+    finally:
+        fam.fetch_first_seen_uids = orig_fetch
+    assert recorded_count == -1
+
+
+def test_first_seen_gate_second_run_is_noop():
+    """Re-runs (the leads' manual 9 AM trigger) record nothing new."""
+    import backend.managers.focused_assignment_manager as fam
+    ledger: set = set()
+    recorded_batches = []
+    orig_fetch, orig_record = fam.fetch_first_seen_uids, fam.record_first_seen
+    fam.fetch_first_seen_uids = lambda uids: set(ledger)
+
+    def fake_record(rows):
+        recorded_batches.append(len(rows))
+        ledger.update(row["review_uid"] for row in rows)
+
+    fam.record_first_seen = fake_record
+    try:
+        first_run = fam._record_first_seen(_gate_reviews_df())
+        second_run = fam._record_first_seen(_gate_reviews_df())
+    finally:
+        fam.fetch_first_seen_uids, fam.record_first_seen = orig_fetch, orig_record
+    assert first_run == 4
+    assert second_run == 0
+    assert recorded_batches == [4, 0]
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted({k: v for k, v in globals().items()

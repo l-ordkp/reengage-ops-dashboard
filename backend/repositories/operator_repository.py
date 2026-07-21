@@ -4,7 +4,7 @@ from __future__ import annotations
 import pandas as pd
 
 from backend.clients.bq_client import bq_read
-from backend.config import TABLE_ASSIGNMENTS_READ, TABLE_USERS
+from backend.config import TABLE_ASSIGNMENTS_READ, TABLE_OPS_LOG_READ, TABLE_USERS
 from backend.utils.cache import cached
 
 
@@ -134,12 +134,14 @@ def fetch_daily_loop_completed_14d() -> pd.DataFrame:
 
 @cached(ttl=300)
 def fetch_daily_ingested_14d() -> pd.DataFrame:
-    """One row per IST calendar day, last 14 days, with the count of distinct
-    reviews that first entered the assignment system that day. "First entered"
-    means MIN(assigned_at) per review_uid — the daily 8 AM IST cron INSERTs a
-    fresh row on every rebuild, so the earliest assigned_at is the first time
-    the review was surfaced to operators. Densified — days with zero ingested
-    still appear as 0 so the chart aligns 1:1 with daily-loop-completed.
+    """One row per IST calendar day, last 14 days, with the count of new scoped
+    reviews that entered the system that day. Source of truth is the
+    first_seen ledger (action='first_seen' rows in ops_log, written by the
+    daily cron's gate) — NOT assignment rows, which since the focused
+    algorithm reflect prioritization, not arrival. MIN(processing_timestamp)
+    per review_uid guards against the rare double-write race. Densified —
+    days with zero ingested still appear as 0 so the chart aligns 1:1 with
+    daily-loop-completed.
     """
     return bq_read(f"""
         WITH days AS (
@@ -147,16 +149,17 @@ def fetch_daily_ingested_14d() -> pd.DataFrame:
             FROM UNNEST(GENERATE_ARRAY(0, 13)) AS n
         ),
         first_seen AS (
-            SELECT review_uid, MIN(assigned_at) AS first_assigned_at
-            FROM `{TABLE_ASSIGNMENTS_READ}`
+            SELECT review_uid, MIN(processing_timestamp) AS first_seen_at
+            FROM `{TABLE_OPS_LOG_READ}`
+            WHERE action = 'first_seen'
             GROUP BY review_uid
         ),
         ingested AS (
             SELECT
-                DATE(first_assigned_at, 'Asia/Kolkata') AS d,
+                DATE(first_seen_at, 'Asia/Kolkata') AS d,
                 COUNT(*) AS ingested
             FROM first_seen
-            WHERE DATE(first_assigned_at, 'Asia/Kolkata')
+            WHERE DATE(first_seen_at, 'Asia/Kolkata')
                   >= DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 13 DAY)
             GROUP BY d
         )

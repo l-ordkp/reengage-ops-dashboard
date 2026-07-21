@@ -440,6 +440,99 @@ def fetch_already_assigned_uids() -> set[str]:
                 pass
 
 
+# ── First-seen ledger (ingested metric) ───────────────────────────────────────
+# "Ingested" = the day a review first passes scoping (chain mapped, config not
+# paused). Recorded as action='first_seen' rows in reengage_ops_log by the
+# daily cron's gate (focused_assignment_manager._record_first_seen). Kept in
+# ops_log deliberately: existing table, existing CDC mirror, no new infra.
+
+FIRST_SEEN_ACTION = "first_seen"
+# Only reviews inside the 14-day eligibility window can appear in the cron's
+# pool, so dedup never needs to look further back than window + slack.
+FIRST_SEEN_LOOKBACK_DAYS = 20
+
+
+def fetch_first_seen_uids(candidate_uids: list[str]) -> set[str]:
+    """Of the given candidates, which already have a first_seen ledger row?
+    Chunked ANY() lookups against the indexed ops_log, time-bounded to the
+    eligibility window so the scan never grows with ledger history."""
+    if not candidate_uids:
+        return set()
+    sql = text(f"""
+        SELECT review_uid FROM reengage_ops_log
+        WHERE action = '{FIRST_SEEN_ACTION}'
+          AND processing_timestamp >= now() - interval '{FIRST_SEEN_LOOKBACK_DAYS} days'
+          AND review_uid = ANY(:uids)
+    """)
+    CHUNK = 10000
+    seen: set[str] = set()
+    session = None
+    try:
+        session = get_pg_session()
+        for i in range(0, len(candidate_uids), CHUNK):
+            rows = session.execute(
+                sql, {"uids": candidate_uids[i:i + CHUNK]}
+            ).fetchall()
+            seen.update(r[0] for r in rows if r[0])
+        return seen
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+
+def record_first_seen(rows: list[dict]) -> None:
+    """Insert first_seen ledger rows. Each row: review_uid, platform,
+    chain_name. Chunked commits like insert_pending; caller (the cron gate) is
+    responsible for deduplication via fetch_first_seen_uids — a double insert
+    is only possible if two runs race between lookup and insert, and the daily
+    read aggregates per-uid MIN(processing_timestamp) date so even that cannot
+    double-count."""
+    if not rows:
+        return
+    now = datetime.now(timezone.utc)
+    sql = text("""
+        INSERT INTO reengage_ops_log
+            (entry_id, review_uid, platform, chain_name, action,
+             operator_email, performed_by, remarks, processing_timestamp,
+             created_at, updated_at)
+        VALUES
+            (:entry_id, :review_uid, :platform, :chain_name, :action,
+             'system', 'system', '', :now, :now, :now)
+    """)
+    CHUNK = 2000
+    session = None
+    try:
+        session = get_pg_session()
+        for i in range(0, len(rows), CHUNK):
+            params = [{
+                "entry_id": str(uuid.uuid4()),
+                "review_uid": r["review_uid"],
+                "platform": r.get("platform") or "",
+                "chain_name": r.get("chain_name") or "",
+                "action": FIRST_SEEN_ACTION,
+                "now": now,
+            } for r in rows[i:i + CHUNK]]
+            session.execute(sql, params)
+            session.commit()  # per-chunk: bound lock/connection hold time
+    except Exception:
+        if session is not None:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+        logger.exception("record_first_seen failed (partial, %d rows)", len(rows))
+        raise
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+
 def redistribute_pending_for_removed_operator(
     removed_email: str, operator_emails: list[str],
 ) -> int:

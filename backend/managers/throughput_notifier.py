@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from backend.clients.bq_client import bq_read
 from backend.clients.slack_client import post_message
-from backend.config import TABLE_ASSIGNMENTS_READ, TABLE_AUTOMATION_REVIEWS
+from backend.config import TABLE_ASSIGNMENTS_READ, TABLE_AUTOMATION_REVIEWS, TABLE_OPS_LOG_READ
 
 
 _CHANNEL = "#reengage-bot-notifications"
@@ -37,14 +37,18 @@ def _fetch_yesterday_rows(target_date: str) -> list[dict]:
             SELECT 'Doordash' AS platform UNION ALL SELECT 'UberEats'
         ),
         first_seen AS (
-            SELECT review_uid, platform, MIN(assigned_at) AS first_assigned_at
-            FROM `{TABLE_ASSIGNMENTS_READ}`
+            -- first_seen ledger rows (arrival into scoped pool), not
+            -- assignment rows: assignment reflects prioritization since the
+            -- focused algorithm, not ingestion
+            SELECT review_uid, platform, MIN(processing_timestamp) AS first_seen_at
+            FROM `{TABLE_OPS_LOG_READ}`
+            WHERE action = 'first_seen'
             GROUP BY review_uid, platform
         ),
         ingested AS (
             SELECT platform, COUNT(*) AS ingested
             FROM first_seen
-            WHERE DATE(first_assigned_at, 'Asia/Kolkata') = DATE('{target_date}')
+            WHERE DATE(first_seen_at, 'Asia/Kolkata') = DATE('{target_date}')
             GROUP BY platform
         ),
         recent_reviews AS (
