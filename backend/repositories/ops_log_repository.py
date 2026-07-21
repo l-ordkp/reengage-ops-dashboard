@@ -35,6 +35,9 @@ def fetch_recent_ops_log(limit: int = 500) -> pd.DataFrame:
         SELECT entry_id AS id, review_uid, platform, chain_name, action,
                operator_email, performed_by, remarks, processing_timestamp
         FROM `{TABLE_OPS_LOG_READ}`
+        -- first_seen ledger rows are a metric, not audit events; ~5k/day would
+        -- drown the human-facing log view
+        WHERE action != 'first_seen'
         ORDER BY processing_timestamp DESC
         LIMIT {limit}
     """)

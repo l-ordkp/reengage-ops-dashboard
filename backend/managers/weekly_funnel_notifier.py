@@ -6,9 +6,10 @@ counts events that HAPPENED during the week, each on its OWN event date in IST
 (Asia/Kolkata) — the same conventions as the daily throughput alert and the
 operators tab:
 
-  • Ingested — reviews that first ENTERED THE QUEUE in the week: MIN(assigned_at)
-               per review (the 8 AM IST cron pickup). Same "ingested" as the daily
-               alert / operators tab / "Daily Loop" chart. NOT the posted date.
+  • Ingested — reviews that first ENTERED THE SYSTEM (scoped) in the week:
+               first_seen ledger rows (action='first_seen' ops_log entries written
+               by the daily cron's gate). Same "ingested" as the daily alert /
+               operators tab / "Daily Loop" chart. NOT the posted date.
   • Solved   — reviews Loop-COMPLETED in the week (assignment completed_at).
   • Expired  — reviews whose DEADLINE fell in the week and were not replied by
                that deadline (can include reviews posted 7/14 days earlier).
@@ -38,6 +39,7 @@ from backend.clients.slack_client import post_message
 from backend.config import (
     TABLE_ASSIGNMENTS_READ,
     TABLE_AUTOMATION_REVIEWS,
+    TABLE_OPS_LOG_READ,
     TABLE_REVIEW_RESPONSE_CFG,
     TABLE_SLUG_AM_MAPPING,
 )
@@ -78,19 +80,25 @@ def _in_scope_exists(review_alias: str = "ar", chain_expr: str = "sm.chain") -> 
 
 
 def _fetch_ingested(start_date: str, end_date: str) -> list[dict]:
-    """Reviews that first entered the assignments queue in the window
-    (MIN(assigned_at), IST) — the canonical "ingested", matching the daily alert /
-    operators tab. Assignments are already scoped (the cron only queues in-scope
-    reviews). Returns [{platform, total}]."""
+    """Reviews that first entered the system (scoped) in the window — first_seen
+    ledger rows, the canonical "ingested", matching the daily alert / operators
+    tab (all three read the same ledger since PR #36; assignment rows reflect
+    prioritization, not arrival, under the focused algorithm). Returns
+    [{platform, total}]."""
     sql = f"""
         WITH first_seen AS (
-          SELECT review_uid, platform, MIN(assigned_at) AS first_assigned
-          FROM `{TABLE_ASSIGNMENTS_READ}`
+          SELECT review_uid, platform, MIN(processing_timestamp) AS first_seen_at
+          FROM `{TABLE_OPS_LOG_READ}`
+          WHERE action = 'first_seen'
+            -- bounded aggregation input (mirror is unpartitioned; see
+            -- fetch_daily_ingested_14d for why this is correctness-safe)
+            AND processing_timestamp >= TIMESTAMP_SUB(TIMESTAMP('{start_date}'), INTERVAL 2 DAY)
+            AND processing_timestamp <= TIMESTAMP_ADD(TIMESTAMP('{end_date}'), INTERVAL 3 DAY)
           GROUP BY review_uid, platform
         )
         SELECT platform, COUNT(*) AS total
         FROM first_seen
-        WHERE DATE(first_assigned, 'Asia/Kolkata') BETWEEN DATE '{start_date}' AND DATE '{end_date}'
+        WHERE DATE(first_seen_at, 'Asia/Kolkata') BETWEEN DATE '{start_date}' AND DATE '{end_date}'
         GROUP BY platform
     """
     return bq_read(sql).to_dict("records")
@@ -246,7 +254,7 @@ def _build_blocks(
 
     note = (
         "_Independent weekly counts (they don't sum), all IST. *Ingested* = first entered the "
-        "queue this week (same as the daily alert / operators tab); *Solved* = Loop-completed "
+        "system this week (same as the daily alert / operators tab); *Solved* = Loop-completed "
         "this week; *Expired* = deadline fell this week and was missed. `late_ingestion_N` = "
         "days from posted to first actionable; `ingested_after_expiry` = never queued before the deadline._"
     )
