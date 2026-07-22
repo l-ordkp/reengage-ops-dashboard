@@ -42,5 +42,11 @@ def record_first_seen_reviews(reviews) -> int:
         record_first_seen(new_rows.to_dict("records"))
         return len(new_rows)
     except Exception:
-        logger.exception("first_seen ledger gate failed; continuing with assignment")
+        # Loud, grep-stable marker: this failure zeroes the ingested chart and
+        # both Slack alerts while assignment continues normally — the cron
+        # summary's first_seen_recorded == -1 is the other visible symptom
+        # (2026-07-22 incident: silent zeros for a full morning).
+        logger.exception(
+            "FIRST_SEEN_GATE_FAILED: ledger not written this run; ingested "
+            "metric will undercount until a successful run; assignment continues")
         return -1

@@ -488,7 +488,15 @@ def record_first_seen(rows: list[dict]) -> None:
     chain_name. Chunked commits like insert_pending. Dedup is belt-and-braces:
     the caller pre-filters via fetch_first_seen_uids, and the UNIQUE partial
     index (migrations/2026-07-21) + ON CONFLICT DO NOTHING make a concurrent-
-    run race duplicate structurally impossible."""
+    run race duplicate structurally impossible.
+
+    ON CONFLICT is deliberately TARGET-LESS: an index-inference clause
+    (ON CONFLICT (review_uid) WHERE action = ...) makes the INSERT itself
+    depend on the migration having been run — on 2026-07-22 the first
+    post-deploy cron wrote ZERO ledger rows because the index didn't exist
+    yet and the fail-open gate swallowed the inference error silently.
+    Target-less DO NOTHING is valid with or without the index; the index
+    remains a performance + integrity upgrade, never a runtime dependency."""
     if not rows:
         return
     now = datetime.now(timezone.utc)
@@ -500,7 +508,7 @@ def record_first_seen(rows: list[dict]) -> None:
         VALUES
             (:entry_id, :review_uid, :platform, :chain_name, :action,
              'system', 'system', '', :now, :now, :now)
-        ON CONFLICT (review_uid) WHERE action = 'first_seen' DO NOTHING
+        ON CONFLICT DO NOTHING
     """)
     CHUNK = 2000
     session = None
