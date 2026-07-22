@@ -242,6 +242,20 @@ def test_first_seen_gate_second_run_is_noop():
     assert recorded_batches == [4, 0]
 
 
+def test_record_first_seen_sql_is_targetless_on_conflict():
+    """Tripwire (2026-07-22 incident): an ON CONFLICT index-inference clause
+    makes the ledger INSERT depend on a manual migration having been run —
+    the writer must stay target-less. Source-level check because exercising
+    the real statement needs a live Postgres."""
+    import inspect
+
+    from backend.repositories.pg_reengage_repository import record_first_seen
+    source = inspect.getsource(record_first_seen)
+    assert "ON CONFLICT DO NOTHING" in source
+    assert "ON CONFLICT (" not in source, (
+        "index-inference clause reintroduced; see 2026-07-22 incident")
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted({k: v for k, v in globals().items()

@@ -486,9 +486,11 @@ def fetch_first_seen_uids(candidate_uids: list[str]) -> set[str]:
 def record_first_seen(rows: list[dict]) -> None:
     """Insert first_seen ledger rows. Each row: review_uid, platform,
     chain_name. Chunked commits like insert_pending. Dedup is belt-and-braces:
-    the caller pre-filters via fetch_first_seen_uids, and the UNIQUE partial
-    index (migrations/2026-07-21) + ON CONFLICT DO NOTHING make a concurrent-
-    run race duplicate structurally impossible.
+    the caller pre-filters via fetch_first_seen_uids; WHEN the unique partial
+    index (migrations/2026-07-21) exists, ON CONFLICT DO NOTHING additionally
+    makes a concurrent-run race duplicate structurally impossible. Without the
+    index, dedup falls back to the pre-filter plus the read side's per-uid
+    MIN(processing_timestamp) — correct, just not race-proof.
 
     ON CONFLICT is deliberately TARGET-LESS: an index-inference clause
     (ON CONFLICT (review_uid) WHERE action = ...) makes the INSERT itself
@@ -496,7 +498,11 @@ def record_first_seen(rows: list[dict]) -> None:
     post-deploy cron wrote ZERO ledger rows because the index didn't exist
     yet and the fail-open gate swallowed the inference error silently.
     Target-less DO NOTHING is valid with or without the index; the index
-    remains a performance + integrity upgrade, never a runtime dependency."""
+    remains a performance + integrity upgrade, never a runtime dependency.
+    CAVEAT: target-less means conflicts on ANY unique constraint on this
+    table are silently absorbed — today that is only the entry_id PK
+    (fresh uuid4, no realistic collision), but a unique constraint added to
+    reengage_ops_log later would be absorbed here too; revisit then."""
     if not rows:
         return
     now = datetime.now(timezone.utc)
