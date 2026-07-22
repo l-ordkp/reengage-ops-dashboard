@@ -247,12 +247,20 @@ def test_record_first_seen_sql_is_targetless_on_conflict():
     makes the ledger INSERT depend on a manual migration having been run —
     the writer must stay target-less. Source-level check because exercising
     the real statement needs a live Postgres."""
+    import ast
     import inspect
+    import textwrap
 
     from backend.repositories.pg_reengage_repository import record_first_seen
-    source = inspect.getsource(record_first_seen)
-    assert "ON CONFLICT DO NOTHING" in source
-    assert "ON CONFLICT (" not in source, (
+    # Strip the docstring first — it deliberately QUOTES the forbidden clause
+    # while documenting the incident, so raw-source matching false-positives.
+    fn_ast = ast.parse(textwrap.dedent(inspect.getsource(record_first_seen))).body[0]
+    if (fn_ast.body and isinstance(fn_ast.body[0], ast.Expr)
+            and isinstance(fn_ast.body[0].value, ast.Constant)):
+        fn_ast.body = fn_ast.body[1:]
+    code_without_docstring = ast.unparse(fn_ast)
+    assert "ON CONFLICT DO NOTHING" in code_without_docstring
+    assert "ON CONFLICT (" not in code_without_docstring, (
         "index-inference clause reintroduced; see 2026-07-22 incident")
 
 
