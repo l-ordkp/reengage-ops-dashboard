@@ -4,6 +4,10 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+class ExtensionAuthBody(BaseModel):
+    google_access_token: str
+
+
 class MarkRespondedBody(BaseModel):
     order_id: str
     platform: str

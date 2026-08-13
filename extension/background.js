@@ -208,12 +208,25 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session.remove(`tab_${tabId}`);
 });
 
-// ── Get operator email — only from verified Google OAuth ──
+// ── Get operator email — display only; API auth uses the operator token ──
 function getOperatorEmail() {
   return new Promise((resolve) => {
     chrome.storage.sync.get(["operatorEmail", "emailVerified"], (result) => {
       if (result.operatorEmail && result.emailVerified) {
         resolve(result.operatorEmail);
+      } else {
+        resolve("");
+      }
+    });
+  });
+}
+
+// ── Get operator token — backend-issued JWT from the popup's sign-in flow ──
+function getOperatorToken() {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get(["operatorToken", "emailVerified"], (result) => {
+      if (result.operatorToken && result.emailVerified) {
+        resolve(result.operatorToken);
       } else {
         resolve("");
       }
@@ -384,11 +397,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Lookup AI response from Cloud Run
   if (message.type === "FETCH_RESPONSE") {
     const { orderId } = message;
-    Promise.all([getApiBase(), getOperatorEmail()]).then(([apiBase, email]) => {
+    Promise.all([getApiBase(), getOperatorToken()]).then(([apiBase, token]) => {
       const url = `${apiBase}/api/extension/lookup?order_id=${encodeURIComponent(orderId)}`;
       fetch(url, {
         headers: {
-          "X-Operator-Email": email,
+          "Authorization": `Bearer ${token}`,
           "ngrok-skip-browser-warning": "true"
         }
       })
@@ -414,12 +427,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true, data: { processed: 0 } });
       return true;
     }
-    enqueueWrite(() => Promise.all([getApiBase(), getOperatorEmail()]).then(([apiBase, email]) =>
+    enqueueWrite(() => Promise.all([getApiBase(), getOperatorToken()]).then(([apiBase, token]) =>
       fetch(`${apiBase}/api/extension/observed-responded`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Operator-Email": email,
+          "Authorization": `Bearer ${token}`,
           "ngrok-skip-browser-warning": "true"
         },
         body: JSON.stringify({ items })
@@ -442,7 +455,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // background reporting; the operator is unaffected.
   if (message.type === "MARK_RESPONDED") {
     const { orderId, platform, chainName, qc } = message;
-    enqueueWrite(() => Promise.all([getApiBase(), getOperatorEmail()]).then(([apiBase, email]) => {
+    enqueueWrite(() => Promise.all([getApiBase(), getOperatorToken()]).then(([apiBase, token]) => {
       const body = {
         order_id: orderId,
         platform: platform,
@@ -462,7 +475,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Operator-Email": email,
+          "Authorization": `Bearer ${token}`,
           "ngrok-skip-browser-warning": "true"
         },
         body: JSON.stringify(body)

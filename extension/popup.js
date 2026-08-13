@@ -1,4 +1,13 @@
 const GOOGLE_CLIENT_ID = "983150008719-7v42pvpog93epoaf8fs8jlrmmv4f7ss0.apps.googleusercontent.com";
+const DEFAULT_API_BASE = "https://reengage-ops-dashboard-v2-ul5ne76yva-uc.a.run.app";
+
+function getApiBase() {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get("apiBase", (result) => {
+      resolve(result.apiBase || DEFAULT_API_BASE);
+    });
+  });
+}
 
 document.addEventListener("DOMContentLoaded", () => {
   const signedInSection = document.getElementById("signed-in-section");
@@ -73,14 +82,28 @@ document.addEventListener("DOMContentLoaded", () => {
       const userInfo = await resp.json();
       if (!userInfo.email) throw new Error("No email in Google response");
 
-      // Store verified email
+      // Exchange the Google token for a backend-signed operator JWT — the
+      // backend verifies the token with Google and checks operator approval.
+      const apiBase = await getApiBase();
+      const authResp = await fetch(`${apiBase}/api/extension/auth`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "true"
+        },
+        body: JSON.stringify({ google_access_token: accessToken })
+      });
+      const authData = await authResp.json();
+      if (!authResp.ok) throw new Error(authData.detail || `Auth failed (HTTP ${authResp.status})`);
+
       await chrome.storage.sync.set({
-        operatorEmail: userInfo.email,
-        operatorName: userInfo.name || "",
+        operatorEmail: authData.email,
+        operatorName: authData.name || userInfo.name || "",
+        operatorToken: authData.token,
         emailVerified: true
       });
 
-      showSignedIn(userInfo.email, userInfo.name || "");
+      showSignedIn(authData.email, authData.name || userInfo.name || "");
     } catch (err) {
       authError.textContent = err.message || "Sign in failed";
       authError.style.display = "block";
@@ -92,7 +115,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Sign out
   signOutBtn.addEventListener("click", () => {
-    chrome.storage.sync.remove(["operatorEmail", "operatorName", "emailVerified"], () => {
+    chrome.storage.sync.remove(["operatorEmail", "operatorName", "operatorToken", "emailVerified"], () => {
       showSignedOut();
     });
   });

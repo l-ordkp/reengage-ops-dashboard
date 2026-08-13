@@ -1,13 +1,21 @@
 """
 Chrome extension API business logic — lookup + mark responded.
-Operator auth uses X-Operator-Email (not JWT) — validated here.
+Operator auth uses a backend-issued JWT obtained by exchanging a Google OAuth
+access token at /api/extension/auth — the operator identity is the token's
+verified subject, never a client-asserted header.
 """
 from __future__ import annotations
 
+import os
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 
+import jwt
 from fastapi import HTTPException
+
+from backend.auth.dependencies import ALGORITHM, SECRET_KEY
+from backend.auth.google_oauth import verify_google_access_token
 
 from backend.repositories.assignment_repository import (
     fetch_assignments_by_ids,
@@ -43,18 +51,68 @@ UUID_RE = re.compile(
     re.IGNORECASE,
 )
 
+# OAuth client the extension's popup sign-in flow uses (public identifier, not
+# a secret). The /auth endpoint rejects Google tokens minted for any other app.
+EXTENSION_OAUTH_CLIENT_ID = os.environ.get(
+    "EXTENSION_OAUTH_CLIENT_ID",
+    "983150008719-7v42pvpog93epoaf8fs8jlrmmv4f7ss0.apps.googleusercontent.com",
+)
+EXTENSION_TOKEN_SCOPE = "extension"
+EXTENSION_TOKEN_TTL = timedelta(days=7)
 
-def validate_operator(email: str) -> str:
-    """Raises 401/403 if invalid. Returns the email on success."""
-    if not email or "@" not in email:
-        raise HTTPException(status_code=401, detail="Missing operator email")
+
+def login_extension(google_access_token: str) -> dict:
+    """Exchange a Google OAuth access token for a backend-signed operator JWT.
+
+    The email comes from Google's tokeninfo (audience-checked, verified email),
+    never from the client — so the extension identity is cryptographically
+    bound to the Google account the operator actually signed in with.
+    """
+    if not google_access_token:
+        raise HTTPException(status_code=401, detail="Missing Google access token")
+    info = verify_google_access_token(google_access_token, EXTENSION_OAUTH_CLIENT_ID)
+    if not info or not info.get("email"):
+        raise HTTPException(status_code=401, detail="Google token verification failed")
+    email = info["email"].lower()
+    if not is_operator_approved(email):
+        raise HTTPException(status_code=403, detail="Operator not approved")
+    token = jwt.encode(
+        {
+            "sub": email,
+            "scope": EXTENSION_TOKEN_SCOPE,
+            "exp": datetime.now(timezone.utc) + EXTENSION_TOKEN_TTL,
+        },
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+    return {"token": token, "email": email, "name": info.get("name", "")}
+
+
+def validate_operator(authorization: str) -> str:
+    """Authenticate the extension operator from the Authorization header.
+
+    Requires a Bearer JWT issued by login_extension. Returns the token's
+    subject email — approval is re-checked on every call so revoking a user
+    takes effect immediately. Raises 401/403 otherwise.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing operator token")
+    try:
+        payload = jwt.decode(authorization[7:], SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Operator token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid operator token")
+    if payload.get("scope") != EXTENSION_TOKEN_SCOPE or not payload.get("sub"):
+        raise HTTPException(status_code=401, detail="Invalid operator token")
+    email = payload["sub"]
     if not is_operator_approved(email):
         raise HTTPException(status_code=403, detail="Operator not approved")
     return email
 
 
-def lookup(order_id: str, operator_email: str) -> dict:
-    operator_email = validate_operator(operator_email)
+def lookup(order_id: str, authorization: str) -> dict:
+    operator_email = validate_operator(authorization)
     if not UUID_RE.match(order_id):
         raise HTTPException(status_code=400, detail="Invalid order_id")
 
@@ -84,12 +142,12 @@ def lookup(order_id: str, operator_email: str) -> dict:
 
 def mark_responded(
     order_id: str, platform: str, chain_name: str,
-    operator_email: str,
+    authorization: str,
     replied_response: str = "", replied_discount: str = "",
     exact_match_response: bool = True, exact_match_discount: bool = True,
     platform_reply_id: str = "", platform_coupon_id: str = "",
 ) -> dict:
-    operator_email = validate_operator(operator_email)
+    operator_email = validate_operator(authorization)
     if not UUID_RE.match(order_id):
         raise HTTPException(status_code=400, detail="Invalid order_id")
 
@@ -139,7 +197,7 @@ def mark_responded(
     }
 
 
-def observed_responded(items: list[dict], operator_email: str) -> dict:
+def observed_responded(items: list[dict], authorization: str) -> dict:
     """Back-mark reviews the platform has confirmed as replied.
 
     For each item we classify by responder identity (DD's merchantUserEmail
@@ -161,7 +219,7 @@ def observed_responded(items: list[dict], operator_email: str) -> dict:
     Already-completed rows are still skipped — observations never overwrite
     a real submit's metadata.
     """
-    operator_email = validate_operator(operator_email)
+    operator_email = validate_operator(authorization)
 
     valid: list[dict] = []
     for item in items:
