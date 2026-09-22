@@ -42,8 +42,28 @@ from backend.repositories.user_repository import fetch_approved_operators
 # Near-urgent buffer: normals within this many hours of their deadline are
 # eligible; each operator gets ~NEAR_BUFFER_PER_OPERATOR of them (weight-scaled
 # for new operators) on top of their hot share.
-NEAR_URGENT_MAX_HOURS = 72
-NEAR_BUFFER_PER_OPERATOR = int(os.getenv("NEAR_BUFFER_PER_OPERATOR", "150"))
+#
+# NEAR_URGENT_MAX_HOURS is the BINDING constraint, not the per-operator number:
+# it decides how big the eligible pool is at all. Measured 2026-09-22, pool by
+# window (34,783 PENDING reviews in total):
+#
+#     <= 48h (hot)      29          72h ->    544 total  =   49 per operator
+#     48- 72h          515          96h ->  7,635 total  =  694 per operator
+#     72- 96h        7,091         120h -> 14,463 total  = 1315 per operator
+#     96-120h        6,828
+#
+# At 72h the whole team shared ~544 reviews, so operators drained their queue
+# within the shift and a lead had to hit "Run Assignment Now" to top them up
+# (which re-deals every queue — see the churn note in _build_buffer_plan).
+# Raising NEAR_BUFFER_PER_OPERATOR alone did nothing: 400/operator was already
+# live on 2026-08-24, i.e. 4,400 of capacity chasing a 544-review pool.
+#
+# 96h + 700/operator sizes the pool (7,606 near-urgent) just under team
+# capacity (11 x 700 = 7,700), so everyone gets a full queue and nothing is
+# left stranded. Both are env-tunable now so this can be re-balanced as the
+# operator count changes, without a code deploy.
+NEAR_URGENT_MAX_HOURS = int(os.getenv("NEAR_URGENT_MAX_HOURS", "96"))
+NEAR_BUFFER_PER_OPERATOR = int(os.getenv("NEAR_BUFFER_PER_OPERATOR", "700"))
 
 
 def run_focused_assignment(full_reassign: bool = True) -> dict:
@@ -176,9 +196,16 @@ def _build_buffer_plan(ops: list[dict], near_urgent_reviews) -> tuple[dict, dict
         group_key: len(rows) for group_key, rows in near_groups.items()
     }
     buffer_plan: dict = defaultdict(list)
-    buffer_room = [
-        max(round(NEAR_BUFFER_PER_OPERATOR * op["weight"]), 0) for op in ops
-    ]
+    # Both passes below fill operators in list order, so a per-operator room of
+    # NEAR_BUFFER_PER_OPERATOR lets the first operators drain a small pool and
+    # leaves the rest with nothing: on 2026-09-22 a 507-review pool against
+    # 400/operator went 247 / 223 / 42 / 2 / 2 / ... across 11 operators.
+    # When the pool cannot fill everyone, share it out by weight instead, so a
+    # thin day is thin for everyone rather than empty for most.
+    total_weight = sum(op["weight"] for op in ops) or 1.0
+    fair_share = len(near_urgent_reviews) / total_weight
+    per_operator = min(float(NEAR_BUFFER_PER_OPERATOR), fair_share)
+    buffer_room = [max(round(per_operator * op["weight"]), 0) for op in ops]
     # Frozen ownership snapshots: the take-loop mutates op["groups"]/["chains"]
     # (PR #31 review — a lazy filter over the live sets skipped the sibling
     # platform of a just-acquired chain).
@@ -238,6 +265,38 @@ def _build_buffer_plan(ops: list[dict], near_urgent_reviews) -> tuple[dict, dict
                 assign_buffer_rows(op_idx, group_key)
             if buffer_room[op_idx] <= 0:
                 break
+
+    # PASS 3 — mop-up. The fair-share room above is deliberately tight, and
+    # group granularity means an operator can run out of reachable stock before
+    # filling it, which would strand near-urgent reviews in nobody's queue (the
+    # same orphaning that a global void already causes — 415 reviews on
+    # 2026-09-22). Re-open room up to the full NEAR_BUFFER_PER_OPERATOR and
+    # sweep whatever is left, so the plan never leaves eligible stock behind.
+    if any(remaining > 0 for remaining in stock_remaining.values()):
+        for op_idx, op in enumerate(ops):
+            buffer_room[op_idx] = max(
+                round(NEAR_BUFFER_PER_OPERATOR * op["weight"]) - op["buffer_count"], 0
+            )
+        for op_idx in range(len(ops)):
+            if buffer_room[op_idx] <= 0:
+                continue
+            # Chain-grouped, biggest chain first — same login-minimising order
+            # as PASS 2, so the mop-up costs the fewest extra portal logins.
+            leftover_by_chain = defaultdict(list)
+            for group_key in near_groups:
+                if stock_remaining[group_key] > 0:
+                    leftover_by_chain[group_key[0]].append(group_key)
+            for chain_name in sorted(
+                leftover_by_chain,
+                key=lambda name: -sum(
+                    stock_remaining[group_key]
+                    for group_key in leftover_by_chain[name]
+                ),
+            ):
+                for group_key in leftover_by_chain[chain_name]:
+                    assign_buffer_rows(op_idx, group_key)
+                if buffer_room[op_idx] <= 0:
+                    break
 
     # Trim each group's row list to just the dealt prefix so
     # _materialize_assignments (which deals plan counts over the group's row

@@ -134,21 +134,32 @@ def test_unowned_buffer_stays_chain_grouped():
     candidates are being consumed; a lazy generator would skip the sibling
     platform of a chain the operator just acquired, scattering the buffer
     across unrelated chains. With one operator and zero hot work, the buffer
-    must come from the fewest chains possible (both platforms of the biggest
-    chain first), not one platform each of two chains."""
+    must be drawn chain by chain — the biggest chain's platforms exhausted
+    before a second chain is touched at all.
+
+    NOTE: this used to assert chainB was never touched, which only held while
+    the per-operator room was too small to reach it. The buffer now sweeps any
+    stock no one took (PASS 3) rather than stranding it in nobody's queue, so
+    a solo operator legitimately ends up with every near-urgent review. What
+    must still hold — and what the original bug broke — is the ORDER: chainA's
+    sibling platform cannot be skipped over in favour of another chain."""
     _, _, near, ops, _, buffer_assignments, _ = plan_focused(
         [("chainA", "Doordash", 1000, 0), ("chainA", "UberEats", 1000, 0),
          ("chainB", "Doordash", 500, 0)],
         [("solo@x.com", 0)])
-    # chainA holds ~192 near rows across two platforms, chainB ~48; the solo
-    # operator's 150-row buffer fits inside chainA alone, so both of its
-    # platforms must be drained before chainB is touched at all
     rows_taken_per_group = defaultdict(int)
     for assignment in buffer_assignments:
         rows_taken_per_group[(assignment["chain_name"], assignment["platform"])] += 1
-    chains_touched = {group_key[0] for group_key in rows_taken_per_group}
-    assert chains_touched == {"chainA"}, (
-        f"buffer scattered across chains: {dict(rows_taken_per_group)}")
+    near_per_group = near.groupby(["chain_name", "platform"]).size().to_dict()
+
+    # Both chainA platforms fully drained — the sibling platform is never
+    # skipped. A scattering regression shows up here as a short UberEats leg.
+    for group_key in (("chainA", "Doordash"), ("chainA", "UberEats")):
+        assert rows_taken_per_group[group_key] == near_per_group[group_key], (
+            f"chainA not drained before chainB: {dict(rows_taken_per_group)}")
+    # chainB may only be reached once chainA is exhausted (asserted above).
+    assert rows_taken_per_group[("chainB", "Doordash")] <= near_per_group[
+        ("chainB", "Doordash")], "over-dealt chainB"
 
 
 def _gate_reviews_df():

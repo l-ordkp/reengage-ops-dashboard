@@ -26,7 +26,7 @@ steps:
       - '--timeout=3600'
       - '--allow-unauthenticated'
       - '--add-cloudsql-instances=arboreal-vision-339901:us-central1:mysqladmin'
-      - '--set-env-vars=GOOGLE_OAUTH_REDIRECT_URI=https://reengage-ops-dashboard-v2-ul5ne76yva-uc.a.run.app/login,DB_HOST=/cloudsql/arboreal-vision-339901:us-central1:mysqladmin,DB_PORT=5432,DB_NAME=loop_core,NEXT_PUBLIC_GOOGLE_CLIENT_ID=983150008719-7v42pvpog93epoaf8fs8jlrmmv4f7ss0.apps.googleusercontent.com,NEXT_PUBLIC_OAUTH_REDIRECT_URI=https://reengage-ops-dashboard-v2-ul5ne76yva-uc.a.run.app/login,ENV=production,DUAL_WRITE_PG=true,NEAR_BUFFER_PER_OPERATOR=400'
+      - '--set-env-vars=GOOGLE_OAUTH_REDIRECT_URI=https://reengage-ops-dashboard-v2-ul5ne76yva-uc.a.run.app/login,DB_HOST=/cloudsql/arboreal-vision-339901:us-central1:mysqladmin,DB_PORT=5432,DB_NAME=loop_core,NEXT_PUBLIC_GOOGLE_CLIENT_ID=983150008719-7v42pvpog93epoaf8fs8jlrmmv4f7ss0.apps.googleusercontent.com,NEXT_PUBLIC_OAUTH_REDIRECT_URI=https://reengage-ops-dashboard-v2-ul5ne76yva-uc.a.run.app/login,ENV=production,DUAL_WRITE_PG=true,NEAR_BUFFER_PER_OPERATOR=700,NEAR_URGENT_MAX_HOURS=96'
       - '--set-secrets=GCP_REFRESH_TOKEN=reengage-v2-gcp-refresh-token:latest,GCP_CLIENT_ID=reengage-v2-gcp-client-id:latest,GCP_CLIENT_SECRET=reengage-v2-gcp-client-secret:latest,GOOGLE_OAUTH_CLIENT_ID=reengage-v2-google-oauth-client-id:latest,GOOGLE_OAUTH_CLIENT_SECRET=reengage-v2-google-oauth-client-secret:latest,DB_USER=reengage-v2-db-user:latest,DB_PASSWORD=reengage-v2-db-password:latest,JWT_SECRET_KEY=reengage-v2-jwt-secret:latest'
 
 images:
